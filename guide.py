@@ -49,6 +49,7 @@ def speak(text, wav=None):
 def guide_to(x, y, text, secs=8, wav=None):
     """对外接口:在 (x,y) 处指指点点。投给 Tk owner 线程,不阻塞调用方。"""
     speak(text, wav)
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "voice-tutor"))
     import ui
 
     ui.submit(lambda root: _run_overlay(root, x, y, text, secs))
