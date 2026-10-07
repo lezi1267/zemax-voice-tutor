@@ -218,7 +218,28 @@ def _read_analysis_sync():
     dialog_fix.fix()
     out = _spot_part(oss)
     out.update(_rayfan_part(oss))
-    out["当前结构"] = _lde_snapshot(oss)
+    snap = _lde_snapshot(oss)
+    out["当前结构"] = snap
+    try:
+        rows = snap["面参数"]
+        epd = float(snap["系统孔径"]["值"]) / 2.0
+        n_map = {"BK7": 1.5168, "F2": 1.6200, "SF2": 1.6475, "SK16": 1.6204, "F15": 1.6055}
+        y, u, n = epd, 0.0, 1.0
+        refr = [m for m in rows if str(m["面序号"]) != "0" and "无穷" not in str(m["类型"])]
+        for i, m in enumerate(refr):
+            R = m["半径"]
+            R = 0.0 if (not isinstance(R, float) or math.isinf(R)) else R
+            glass = str(m["材料"]).strip()
+            n_after = n_map.get(glass, 1.0)
+            phi = (n_after - n) / R if R else 0.0
+            nu = n * u - y * phi
+            u = nu / n_after
+            y = y + float(m["厚度"]) * u
+            n = n_after
+        if abs(u) > 1e-12:
+            out["近轴EFL_mm"] = round(epd / abs(u), 2)
+    except Exception:
+        pass
     return out
 
 _last_analysis = (0.0, None)  # (时间, 结果),15 秒内复用,防 GLM 连呼刷屏
