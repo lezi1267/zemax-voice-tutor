@@ -376,17 +376,22 @@ async def run_bot(transport) -> None:
 
 
 def _kill_stale_bots():
-    """启动前清掉之前没退干净的 bot 实例 —— 多个实例会抢麦克风和 Zemax 连接位,整机卡死。"""
+    """启动前清掉之前没退干净的 bot 实例 —— 多个实例会抢麦克风和 Zemax 连接位,整机卡死。
+    注意:商店版 Python 的 venv 是"启动器+真身"两个进程,os.getpid() 是真身;
+    排除时必须把启动器(os.getppid())也排除,否则清理脚本会把自己杀了。"""
     import subprocess
 
-    me = os.getpid()
-    subprocess.run(
-        ["powershell", "-NoProfile", "-Command",
-         f"Get-CimInstance Win32_Process -Filter \"Name='python.exe' or Name='python3.13.exe'\" | "
-         f"Where-Object {{$_.CommandLine -like '*bot.py*' -and $_.ProcessId -ne {me}}} | "
-         f"ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force }}"],
-        capture_output=True,
+    me, parent = os.getpid(), os.getppid()
+    ps = (
+        f"Get-CimInstance Win32_Process -Filter \"Name='python.exe' or Name='python3.13.exe'\" | "
+        f"Where-Object {{$_.CommandLine -like '*bot.py*' -and $_.ProcessId -ne {me} "
+        f"-and $_.ProcessId -ne {parent}}} | "
+        f"ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force; 'killed ' + $_.ProcessId }}"
     )
+    out = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True)
+    killed = out.stdout.decode(errors="replace").strip()
+    if killed:
+        logger.info("已清理残留实例: {}", killed)
 
 
 async def main():
