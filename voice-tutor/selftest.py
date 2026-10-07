@@ -4,6 +4,7 @@
 需要 Zemax 参与的项,在 Zemax 没开/交互扩展没开时自动 SKIP。"""
 import asyncio
 import json
+import os
 import sys
 import time
 
@@ -167,6 +168,50 @@ async def main():
         report("OCR 引擎(合成图实测)", "3.14" in joined or "108.04" in joined, joined[:40])
     except Exception as e:
         report("OCR 引擎(合成图实测)", False, str(e)[:60])
+
+    # 7) Minimax TTS:raw HTTP 按生产的同款参数打一发,验 key/端点/音色 + 首包延迟
+    api_key = os.getenv("MINIMAX_API_KEY", "").strip()
+    group_id = os.getenv("MINIMAX_GROUP_ID", "").strip()
+    if not (api_key and group_id):
+        report("Minimax TTS", None, ".env 没配 key,跳过")
+    else:
+        async def minimax_test():
+            import aiohttp
+
+            url = os.getenv("MINIMAX_BASE_URL", "https://api.minimaxi.com/v1/t2a_v2") + "?GroupId=" + group_id
+            payload = {
+                "stream": True,
+                "model": os.getenv("MINIMAX_MODEL", "speech-2.8-turbo"),
+                "text": "自检,赛德尔系数读出来了。",
+                "voice_setting": {
+                    "voice_id": os.getenv("MINIMAX_VOICE", "female-shaonv"),
+                    "speed": 1.0, "vol": 1.0, "pitch": 0,
+                },
+                "audio_setting": {"bitrate": 128000, "format": "pcm", "channel": 1, "sample_rate": 24000},
+            }
+            t0 = time.time()
+            async with aiohttp.ClientSession() as s:
+                async with s.post(url, json=payload,
+                                  headers={"Authorization": f"Bearer {api_key}"}) as r:
+                    first = None
+                    body = b""
+                    async for chunk in r.content.iter_any():
+                        if first is None:
+                            first = time.time() - t0
+                        body += chunk
+            return r.status, first, time.time() - t0, body
+
+        try:
+            status, first, total, body = await asyncio.wait_for(minimax_test(), timeout=30)
+            try:
+                msg = json.loads(body).get("base_resp", {})
+                ok = msg.get("status_code") == 0
+                note = f"HTTP {status} 首包{first:.1f}s 全程{total:.1f}s {msg.get('status_msg', '')}"
+            except Exception:
+                ok, note = False, f"HTTP {status} 首包{first:.1f}s 非JSON:{body[:40]!r}"
+            report("Minimax TTS", ok, note)
+        except Exception as e:
+            report("Minimax TTS", False, str(e)[:60])
 
     fails = [r for r in results if r[0] == "FAIL"]
     print(f"\n=== 自检完成: {len(results)-len(fails)}/{len(results)} 通过 ===", flush=True)

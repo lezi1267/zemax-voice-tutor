@@ -359,9 +359,11 @@ async def run_bot(transport) -> None:
         tts = MiniMaxHttpTTSService(
             api_key=os.getenv("MINIMAX_API_KEY"),
             group_id=os.getenv("MINIMAX_GROUP_ID"),
+            # 国内开放平台是 minimaxi.com(多个 i);pipecat 默认的国际站才是 minimax.io
+            base_url=os.getenv("MINIMAX_BASE_URL", "https://api.minimaxi.com/v1/t2a_v2"),
             aiohttp_session=session,
             settings=MiniMaxTTSSettings(
-                model="speech-2.8-hd",
+                model=os.getenv("MINIMAX_MODEL", "speech-2.8-turbo"),
                 voice=os.getenv("MINIMAX_VOICE", "female-shaonv"),
                 language=Language.ZH,
                 speed=float(os.getenv("MINIMAX_SPEED", "1.0")),
