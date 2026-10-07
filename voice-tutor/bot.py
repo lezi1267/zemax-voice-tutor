@@ -87,7 +87,7 @@ from dotenv import load_dotenv
 import chat_window
 import lessons
 import zemax_tools
-from lessons import read_lesson_schema, finish_lesson_schema
+from lessons import read_lesson_schema, finish_lesson_schema, save_step_schema
 from zemax_tools import point_at_schema, read_analysis_schema, read_lde_schema
 
 load_dotenv(override=True)
@@ -107,6 +107,8 @@ SYSTEM = (
     "带课要学生点界面元素时:调用 point_at 指给他看,再告诉他下一步。"
     "学生报验收数字:用 read_analysis/read_lde 实测对比,当场判定过/不过、差在哪;"
     "判定通过才调用 finish_lesson 记录进度(note 写一句话讲评)。"
+    "每次下达新的操作步骤后调用 save_step 记断点(step 一句话复述该步),学生重启程序后能接着学;"
+    "学生说'继续/接着上次的':调 read_lesson(课号填档案当前课),档案里'断点'还在就从那步的下一步直接带,不重念课件、不重复已给步骤。"
     "EFFL 之类的数:read_analysis 返回里有 近轴EFL_mm,用实测值,不要自己估。"
     "带课时注意:学生系统的实际状态(孔径/像面位置)可能和课件前提不同,"
     "先用 read_lde 读实际值,按实际状态调整教学(比如课件说 EPD20 而实际是 10,就按 10 讲)。"
@@ -294,6 +296,24 @@ class ChatLogObserver(BaseObserver):
             chat_window.log("你", frame.text)
 
 
+def _greeting_prompt() -> str:
+    """开场白指令:有没验收完的断点就提醒续教;隔了几天顺带提议先复习。"""
+    prog = lessons.load_progress()
+    cp = prog.get("checkpoint") or {}
+    if cp.get("lesson") and cp["lesson"] not in prog.get("done", []):
+        return (
+            f"打招呼,说你记得他上次进行到第{cp['lesson']}课'{cp.get('step', '')}',"
+            f"问他要不要从这里继续;他说继续就调 read_lesson 后从这步的下一步直接带,不重念课件。"
+        )
+    days = lessons._days_since_last(prog)
+    if days and days >= 3:
+        return (
+            f"打招呼,点出他隔了约{int(days)}天没来,提议先花两分钟复习上次第"
+            f"{prog.get('current', 0)}课的要点,再问他今天学什么。"
+        )
+    return "用一句话跟学生打招呼,问准备好上课了吗。"
+
+
 class Greeting(FrameProcessor):
     """看到 StartFrame 触发一次 LLM,让 bot 先开口 —— 第一次跑就能验证全链路通没通。
     GLM 不接受只有 system 的请求,先往上下文写一句用户消息。"""
@@ -307,9 +327,7 @@ class Greeting(FrameProcessor):
         await super().process_frame(frame, direction)
         if isinstance(frame, StartFrame) and not self._done:
             self._done = True
-            self._context.add_message(
-                {"role": "user", "content": "用一句话跟学生打招呼,问准备好上课了吗。"}
-            )
+            self._context.add_message({"role": "user", "content": _greeting_prompt()})
             await self.queue_frame(LLMRunFrame())
         await self.push_frame(frame)
 
@@ -361,7 +379,7 @@ async def run_bot(transport) -> None:
         ),
     )
 
-    context = LLMContext(tools=[read_lesson_schema, read_lde_schema, read_analysis_schema, point_at_schema, finish_lesson_schema])
+    context = LLMContext(tools=[read_lesson_schema, read_lde_schema, read_analysis_schema, point_at_schema, finish_lesson_schema, save_step_schema])
     user_agg, assistant_agg = LLMContextAggregatorPair(
         context,
         user_params=LLMUserAggregatorParams(

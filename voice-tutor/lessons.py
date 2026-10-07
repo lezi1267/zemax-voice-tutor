@@ -22,6 +22,37 @@ def save_progress(p: dict):
     PROGRESS.write_text(json.dumps(p, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _days_since_last(p: dict) -> float | None:
+    """距上次学习过了几天(按 log 最后一条),没有记录返回 None。"""
+    log = p.get("log") or []
+    if not log:
+        return None
+    try:
+        t = time.mktime(time.strptime(log[-1]["time"], "%Y-%m-%d %H:%M"))
+        return round((time.time() - t) / 86400, 1)
+    except Exception:
+        return None
+
+
+async def _save_step_handler(params) -> None:
+    args = params.arguments or {}
+    try:
+        n = int(args.get("lesson", 0))
+    except (TypeError, ValueError):
+        n = 0
+    step = str(args.get("step", "")).strip()[:120]
+
+    prog = load_progress()
+    old = prog.get("checkpoint") or {}
+    if n and old.get("lesson") == n and old.get("step") == step:
+        await params.result_callback({"ok": True, "说明": "断点没变,不用重复记"})
+        return
+    if n:
+        prog["checkpoint"] = {"lesson": n, "step": step, "time": time.strftime("%Y-%m-%d %H:%M")}
+        save_progress(prog)
+    await params.result_callback({"ok": True, "已记断点": f"第{n}课:{step}" if n else "课号无效,没记"})
+
+
 async def _read_lesson_handler(params) -> None:
     args = params.arguments or {}
     try:
@@ -47,6 +78,8 @@ async def _read_lesson_handler(params) -> None:
         "学习档案": {
             "已完成": prog.get("done", []),
             "当前推进到第几课": prog.get("current", 0),
+            "断点": prog.get("checkpoint"),
+            "距上次学习天数": _days_since_last(prog),
             "最近记录": prog.get("log", [])[-3:],
         },
     }
@@ -66,6 +99,7 @@ async def _finish_lesson_handler(params) -> None:
         prog.setdefault("done", []).append(n)
     if n:
         prog["current"] = n  # 记录推进到哪课
+    prog.pop("checkpoint", None)  # 过课清断点,下次从新一课开头教
     prog.setdefault("log", []).append(
         {"time": time.strftime("%Y-%m-%d %H:%M"), "lesson": n, "note": note[:120]}
     )
@@ -92,6 +126,21 @@ finish_lesson_schema = FunctionSchema(
     },
     required=["lesson"],
     handler=_finish_lesson_handler,
+)
+
+
+save_step_schema = FunctionSchema(
+    name="save_step",
+    description=(
+        "给学生下达一个新的操作步骤后调用,记录教学断点——程序重启后能从这里接着教,学生不丢进度。"
+        "step 用一句话复述刚下达的步骤(如'第2步:后表面半径改成-100')。答疑、评价、闲聊不用调。"
+    ),
+    properties={
+        "lesson": {"type": "integer", "description": "当前课号"},
+        "step": {"type": "string", "description": "一句话描述刚下达的步骤"},
+    },
+    required=["lesson", "step"],
+    handler=_save_step_handler,
 )
 
 

@@ -56,6 +56,38 @@ async def main():
     ok_r = 2 in prog.get("已完成", [])
     report("学习档案(写入+读回)", ok_w and ok_r, f"已完成={prog.get('已完成')}")
 
+    # 2c) 断点续教:save_step 写入/去重 + read_lesson 读回 + finish_lesson 清断点
+    #     (用第 2 课测,它在 done 里,结尾 finish 清掉断点,不留脏状态)
+    p, st = mk_params({"lesson": 2, "step": "自检:测试断点"})
+    await lessons._save_step_handler(p)
+    ok_s = st.get("r", {}).get("ok") is True
+    p, st = mk_params({"lesson": 2, "step": "自检:测试断点"})
+    await lessons._save_step_handler(p)
+    dedup = st.get("r", {}).get("说明") is not None
+    p, st = mk_params({"lesson": 2})
+    await lessons._read_lesson_handler(p)
+    cp = st.get("r", {}).get("学习档案", {}).get("断点") or {}
+    ok_c = cp.get("step") == "自检:测试断点"
+    p, st = mk_params({"lesson": 2, "note": "自检测试讲评"})
+    await lessons._finish_lesson_handler(p)
+    p, st = mk_params({"lesson": 2})
+    await lessons._read_lesson_handler(p)
+    cleared = not st.get("r", {}).get("学习档案", {}).get("断点")
+    report("断点续教(写入+去重+读回+过课清除断点)", ok_s and dedup and ok_c and cleared,
+           f"断点={cp.get('step')}" if ok_c else str(cp)[:40])
+
+    # 2d) 开场白分支:有断点→续教话术(测完还原),无断点→默认问候
+    prog = lessons.load_progress()
+    prog["checkpoint"] = {"lesson": 4, "step": "测试续教话术", "time": "x"}
+    lessons.save_progress(prog)
+    gp = bot._greeting_prompt()
+    resume_ok = "第4课" in gp and "继续" in gp
+    prog.pop("checkpoint", None)
+    lessons.save_progress(prog)
+    gp_default = bot._greeting_prompt()
+    report("开场白续教(有断点)", resume_ok, gp[:40])
+    report("开场白默认(断点已清)", "继续" not in gp_default and "复习" not in gp_default, gp_default[:30])
+
     # 3) Zemax 系工具(依赖 Zemax 开着+交互扩展)
     def zemax_ready():
         try:
