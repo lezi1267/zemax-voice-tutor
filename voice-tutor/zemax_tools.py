@@ -271,7 +271,7 @@ read_lde_schema = FunctionSchema(
 )
 
 
-_last_point = ("", 0.0)  # (目标名, 时间),30 秒内同目标不重复指
+_last_point = ("", 0.0)  # (目标名, 时间),5 分钟内同目标不重复指
 
 
 async def _point_at_handler(params) -> None:
@@ -282,7 +282,7 @@ async def _point_at_handler(params) -> None:
     if not name:
         await params.result_callback({"error": "没说要点哪里,请给界面元素的名字"})
         return
-    if name in _last_point[0] and time.time() - _last_point[1] < 30:
+    if name in _last_point[0] and time.time() - _last_point[1] < 300:
         await params.result_callback({"ok": True, "already": True,
                                      "提示": "30秒内已经指过这里了,直接告诉学生下一步"})
         return
