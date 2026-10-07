@@ -149,29 +149,77 @@ def _parse_values(text: str, labels: list[str]) -> dict:
     return out
 
 
-def _read_analysis_sync():
-    """跑点列图分析,读 RMS 光斑半径(µm)。阻塞,worker 线程专用。"""
+def _parse_rayfan(text: str) -> dict:
+    """RayFan 文本 → 每个系列在光瞳 ±1 处的像差(µm),这就是'边缘光线读数'。"""
+    out = {}
+    series = None
+    for line in text.splitlines():
+        if "Table series" in line:
+            series = line.split(":", 1)[-1].strip()
+            tag = ("子午" if "子午" in series else "弧矢" if "弧矢" in series else series[:6])
+            field = "视场?" if "视场号" not in series else "视场" + series.split("视场号")[1].split()[0].lstrip("=")
+            key_head = f"RayFan_{tag}_{field}"
+            continue
+        if series is None:
+            continue
+        parts = line.split()
+        if len(parts) == 2:
+            try:
+                py, ab = float(parts[0]), float(parts[1])
+            except ValueError:
+                continue
+            if abs(abs(py) - 1.0) < 1e-6:
+                key = key_head + ("_下缘" if py < 0 else "_上缘")
+                out[key] = ab
+    return out
+
+
+def _spot_part(oss):
+    """StandardSpot 分析 → RMS 光斑半径(µm)。"""
     import tempfile
 
-    oss = _connect_sync()
-    import dialog_fix
-    dialog_fix.fix()
     a = oss.Analyses.New_Analysis(zp.constants.Analysis.AnalysisIDM.StandardSpot)
     try:
         a.ApplyAndWaitForCompletion()
         tmp = tempfile.mktemp(suffix=".txt")
         a.ToFile(tmp)
-        text = open(tmp, encoding="utf-8", errors="replace").read()
-        vals = _parse_values(text, ["RMS光斑半径", "RMS Radius"])
-        r = {"RMS光斑半径_um": vals.get("RMS光斑半径", vals.get("RMS Radius"))}
-        r["当前结构"] = _lde_snapshot(oss)  # 一次调用连结构一起给,免得 GLM 反复再调
-        return r
+        vals = _parse_values(open(tmp, encoding="utf-8", errors="replace").read(),
+                             ["RMS光斑半径", "RMS Radius"])
+        return {"RMS光斑半径_um": vals.get("RMS光斑半径", vals.get("RMS Radius"))}
     finally:
         try:
-            a.Close()  # 别在学生 GUI 里留一排分析窗口
+            a.Close()
         except Exception:
             pass
 
+
+def _rayfan_part(oss):
+    """RayFan 分析 → 光瞳 ±1 处的横向像差(µm),即'边缘光线读数'。"""
+    import tempfile
+
+    a = oss.Analyses.New_Analysis(zp.constants.Analysis.AnalysisIDM.RayFan)
+    try:
+        a.ApplyAndWaitForCompletion()
+        tmp = tempfile.mktemp(suffix=".txt")
+        a.ToFile(tmp)
+        return _parse_rayfan(open(tmp, encoding="utf-8", errors="replace").read())
+    finally:
+        try:
+            a.Close()
+        except Exception:
+            pass
+
+
+def _read_analysis_sync():
+    """点列图 RMS + RayFan 边缘 + LDE 结构快照,一次全给。阻塞,worker 线程专用。"""
+    oss = _connect_sync()
+    import dialog_fix
+
+    dialog_fix.fix()
+    out = _spot_part(oss)
+    out.update(_rayfan_part(oss))
+    out["当前结构"] = _lde_snapshot(oss)
+    return out
 
 _last_analysis = (0.0, None)  # (时间, 结果),15 秒内复用,防 GLM 连呼刷屏
 
