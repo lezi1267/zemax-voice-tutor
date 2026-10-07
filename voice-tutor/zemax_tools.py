@@ -224,18 +224,27 @@ def _read_analysis_sync():
         rows = snap["面参数"]
         epd = float(snap["系统孔径"]["值"]) / 2.0
         n_map = {"BK7": 1.5168, "F2": 1.6200, "SF2": 1.6475, "SK16": 1.6204, "F15": 1.6055}
-        y, u, n = epd, 0.0, 1.0
-        refr = [m for m in rows if str(m["面序号"]) != "0" and "无穷" not in str(m["类型"])]
-        for i, m in enumerate(refr):
-            R = m["半径"]
-            R = 0.0 if (not isinstance(R, float) or math.isinf(R)) else R
+        y, u, n = epd, 0.0, 1.0  # 近轴 yu 追迹:物在无穷远,y=入瞳半高
+        for m in rows:
+            if str(m["面序号"]) == "0":
+                continue
             glass = str(m["材料"]).strip()
-            n_after = n_map.get(glass, 1.0)
+            n_after = n_map.get(glass, 1.0)  # 材料列 = 该面之后的介质;空 = 空气
+            Rv = m["半径"]
+            try:
+                R = float(Rv)
+                R = R if math.isfinite(R) else 0.0
+            except (TypeError, ValueError):
+                R = 0.0  # "无穷大" = 平面,光焦度 0
             phi = (n_after - n) / R if R else 0.0
-            nu = n * u - y * phi
+            nu = n * u - y * phi          # 折射(每个面都做,包括玻璃→空气)
             u = nu / n_after
-            y = y + float(m["厚度"]) * u
             n = n_after
+            try:
+                Tv = float(m["厚度"])
+                y += (Tv if math.isfinite(Tv) else 0.0) * u
+            except (TypeError, ValueError):
+                pass  # 像面厚度无穷大,不再转移
         if abs(u) > 1e-12:
             out["近轴EFL_mm"] = round(epd / abs(u), 2)
     except Exception:
