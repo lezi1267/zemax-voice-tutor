@@ -314,7 +314,10 @@ class Greeting(FrameProcessor):
 async def run_bot(transport) -> None:
     # 启动即连 Zemax 并长驻(后台跑,不挡开场白);ZEMAX_ENABLED=0 时完全跳过
     if os.getenv("ZEMAX_ENABLED", "1") == "1":
-        asyncio.create_task(zemax_tools.warm_connect())
+        if _zemax_running():
+            asyncio.create_task(zemax_tools.warm_connect())
+        else:
+            chat_window.log("系统", "提示:Zemax 没开——读数功能暂不可用。开 Zemax 并点 编程→交互扩展 后,问参数时会自动连上。")
     # 听:FunASR SenseVoice,中文专用;实测实时率 0.08,比 whisper medium 快 16 倍且更准
     stt = FunASRSTTService(
         device="cpu",
@@ -402,6 +405,15 @@ def _kill_stale_bots():
     killed = out.stdout.decode(errors="replace").strip()
     if killed:
         logger.info("已清理残留实例: {}", killed)
+
+
+def _zemax_running() -> bool:
+    try:
+        import zemax_api
+
+        return zemax_api._zemax_running()
+    except Exception:
+        return False
 
 
 async def main():
