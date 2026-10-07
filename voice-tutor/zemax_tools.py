@@ -9,6 +9,7 @@ import atexit
 import math
 import os
 import sys
+import time
 from pathlib import Path
 
 from loguru import logger
@@ -27,10 +28,37 @@ def _enabled():
     return os.getenv("ZEMAX_ENABLED", "1") == "1"
 
 
+def _rearm_extension() -> bool:
+    """交互扩展断开后自动重开:在 Zemax 主窗口点 编程→交互扩展。
+    实测 invoke 后约 3 秒可重连;找不到入口(比如 Zemax 没开)返回 False。"""
+    try:
+        from pywinauto import Desktop
+
+        win = Desktop(backend="uia").window(title_re=".*OpticStudio.*")
+        win.set_focus()
+        for c in win.descendants():
+            try:
+                if (c.window_text() or "").strip() == "交互扩展":
+                    c.invoke()
+                    return True
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return False
+
+
 def _connect_sync():
     global _conn
     if _conn is None:
-        _conn = zemax_api.get_system(verbose=False)
+        try:
+            _conn = zemax_api.get_system(verbose=False)
+        except Exception:
+            # 十有八九是交互扩展断会话了,自动点一次重开再试;不行才把错抛给学生
+            if not _rearm_extension():
+                raise
+            time.sleep(2.5)
+            _conn = zemax_api.get_system(verbose=False)
     import dialog_fix
     dialog_fix.fix()  # 解锁被扩展小窗锁住的主窗口 + 小窗去置顶挪角落
     return _conn[0]
@@ -305,6 +333,7 @@ _last_point = ("", 0.0)  # (目标名, 时间),5 分钟内同目标不重复指
 
 
 async def _point_at_handler(params) -> None:
+    global _last_point
     import chat_window
     import time
 

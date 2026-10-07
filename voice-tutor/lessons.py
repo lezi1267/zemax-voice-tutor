@@ -100,9 +100,10 @@ async def _finish_lesson_handler(params) -> None:
     if n:
         prog["current"] = n  # 记录推进到哪课
     prog.pop("checkpoint", None)  # 过课清断点,下次从新一课开头教
-    prog.setdefault("log", []).append(
-        {"time": time.strftime("%Y-%m-%d %H:%M"), "lesson": n, "note": note[:120]}
-    )
+    entry = {"time": time.strftime("%Y-%m-%d %H:%M"), "lesson": n, "note": note[:120]}
+    log = prog.setdefault("log", [])
+    if not (log and log[-1].get("lesson") == n and log[-1].get("note") == entry["note"]):
+        log.append(entry)  # GLM 常连环调用同一验收,相邻重复只记一条
     save_progress(prog)
 
     has_next = any(BASE.glob(f"*第{n + 1}课*.md"))

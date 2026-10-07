@@ -70,10 +70,14 @@ async def main():
     ok_c = cp.get("step") == "自检:测试断点"
     p, st = mk_params({"lesson": 2, "note": "自检测试讲评"})
     await lessons._finish_lesson_handler(p)
+    n_log = len(lessons.load_progress().get("log", []))
+    await lessons._finish_lesson_handler(p)
+    dedup_log = len(lessons.load_progress().get("log", [])) == n_log
     p, st = mk_params({"lesson": 2})
     await lessons._read_lesson_handler(p)
     cleared = not st.get("r", {}).get("学习档案", {}).get("断点")
-    report("断点续教(写入+去重+读回+过课清除断点)", ok_s and dedup and ok_c and cleared,
+    report("断点续教(写入+去重+读回+过课清除断点+日志去重)",
+           ok_s and dedup and ok_c and cleared and dedup_log,
            f"断点={cp.get('step')}" if ok_c else str(cp)[:40])
 
     # 2d) 开场白分支:有断点→续教话术(测完还原),无断点→默认问候
@@ -106,7 +110,7 @@ async def main():
         for name, handler, args in [
                 ("read_lde", zemax_tools._read_lde_handler, None),
                 ("read_analysis", zemax_tools._read_analysis_handler, None),
-                ("point_at", zemax_tools._point_at_handler, {"name": "绘图"})]:
+                ("point_at", zemax_tools._point_at_handler, {"name": "分析"})]:
             r = await run_tool(handler, args)
             if "error" in r and "交互扩展" in r["error"]:
                 report(name, None, "交互扩展没开,跳过(线上会返回友好提示)")
