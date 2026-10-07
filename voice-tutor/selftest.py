@@ -201,17 +201,35 @@ async def main():
                         if first is None:
                             first = time.time() - t0
                         body += chunk
-            return r.status, first, time.time() - t0, body
+            total = time.time() - t0
+            # 响应是 SSE 流:一行行 "data: {json}",audio 是 hex;整包 JSON 报错时走兜底
+            status_code, msg, hex_len = None, "", 0
+            for line in body.decode(errors="replace").splitlines():
+                line = line.strip()
+                if not line.startswith("data:"):
+                    continue
+                try:
+                    d = json.loads(line[5:])
+                except Exception:
+                    continue
+                br = d.get("base_resp") or {}
+                if br.get("status_code") is not None:
+                    status_code, msg = br["status_code"], br.get("status_msg", "")
+                hex_len += len((d.get("data") or {}).get("audio") or "")
+            if status_code is None:
+                try:
+                    br = json.loads(body).get("base_resp", {})
+                    status_code, msg = br.get("status_code"), br.get("status_msg", "")
+                except Exception:
+                    msg = f"非JSON:{body[:40]!r}"
+            return r.status, first, total, status_code, msg, hex_len
 
         try:
-            status, first, total, body = await asyncio.wait_for(minimax_test(), timeout=30)
-            try:
-                msg = json.loads(body).get("base_resp", {})
-                ok = msg.get("status_code") == 0
-                note = f"HTTP {status} 首包{first:.1f}s 全程{total:.1f}s {msg.get('status_msg', '')}"
-            except Exception:
-                ok, note = False, f"HTTP {status} 首包{first:.1f}s 非JSON:{body[:40]!r}"
-            report("Minimax TTS", ok, note)
+            status, first, total, code, msg, hex_len = await asyncio.wait_for(minimax_test(), timeout=30)
+            ok = code == 0 and hex_len > 0
+            report("Minimax TTS", ok,
+                   f"HTTP {status} 首包{first:.1f}s 全程{total:.1f}s {msg} "
+                   f"音频{hex_len // 2}字节" if hex_len else f"HTTP {status} {msg}")
         except Exception as e:
             report("Minimax TTS", False, str(e)[:60])
 
