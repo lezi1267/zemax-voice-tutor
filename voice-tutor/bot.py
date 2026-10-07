@@ -375,7 +375,22 @@ async def run_bot(transport) -> None:
     await runner.run(task)
 
 
+def _kill_stale_bots():
+    """启动前清掉之前没退干净的 bot 实例 —— 多个实例会抢麦克风和 Zemax 连接位,整机卡死。"""
+    import subprocess
+
+    me = os.getpid()
+    subprocess.run(
+        ["powershell", "-NoProfile", "-Command",
+         f"Get-CimInstance Win32_Process -Filter \"Name='python.exe' or Name='python3.13.exe'\" | "
+         f"Where-Object {{$_.CommandLine -like '*bot.py*' -and $_.ProcessId -ne {me}}} | "
+         f"ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force }}"],
+        capture_output=True,
+    )
+
+
 async def main():
+    _kill_stale_bots()
     chat_window.start()
     transport = LocalAudioTransport(
         LocalAudioTransportParams(
