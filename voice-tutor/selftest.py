@@ -172,13 +172,15 @@ async def main():
     # 7) Minimax TTS:raw HTTP 按生产的同款参数打一发,验 key/端点/音色 + 首包延迟
     api_key = os.getenv("MINIMAX_API_KEY", "").strip()
     group_id = os.getenv("MINIMAX_GROUP_ID", "").strip()
-    if not (api_key and group_id):
+    if not api_key:
         report("Minimax TTS", None, ".env 没配 key,跳过")
     else:
         async def minimax_test():
             import aiohttp
 
-            url = os.getenv("MINIMAX_BASE_URL", "https://api.minimaxi.com/v1/t2a_v2") + "?GroupId=" + group_id
+            url = os.getenv("MINIMAX_BASE_URL", "https://api.minimaxi.com/v1/t2a_v2")
+            if group_id:
+                url += "?GroupId=" + group_id
             payload = {
                 "stream": True,
                 "model": os.getenv("MINIMAX_MODEL", "speech-2.8-turbo"),

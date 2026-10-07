@@ -355,12 +355,15 @@ async def run_bot(transport) -> None:
     elif engine == "minimax":
         import aiohttp
 
+        # 新式 sk-api key 自带分组,GroupId 不填就完全不带参数(带了反而 token not match group)
+        group_id = os.getenv("MINIMAX_GROUP_ID", "").strip()
+        base_url = os.getenv("MINIMAX_BASE_URL", "https://api.minimaxi.com/v1/t2a_v2")
         session = aiohttp.ClientSession()
         tts = MiniMaxHttpTTSService(
             api_key=os.getenv("MINIMAX_API_KEY"),
-            group_id=os.getenv("MINIMAX_GROUP_ID"),
+            group_id=group_id,
             # 国内开放平台是 minimaxi.com(多个 i);pipecat 默认的国际站才是 minimax.io
-            base_url=os.getenv("MINIMAX_BASE_URL", "https://api.minimaxi.com/v1/t2a_v2"),
+            base_url=base_url,
             aiohttp_session=session,
             settings=MiniMaxTTSSettings(
                 model=os.getenv("MINIMAX_MODEL", "speech-2.8-turbo"),
@@ -369,6 +372,9 @@ async def run_bot(transport) -> None:
                 speed=float(os.getenv("MINIMAX_SPEED", "1.0")),
             ),
         )
+        if not group_id:
+            # pipecat 会无条件拼 ?GroupId=,实测空参数会被服务端拒;新 key 不需要这个参数
+            tts._base_url = base_url
     else:
         tts = PiperTTSService(voice_id=VOICE)
     # 脑:智谱 GLM。glm-4.5-air 实测 1.3 秒回答,知识比 glm-4-flash 深;关思考模式(语音等不起长思考)
