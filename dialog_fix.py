@@ -18,26 +18,29 @@ EnumProc = ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
 
 
 def all_windows():
+    pids = optic_pids()
     out = []
 
     @EnumProc
     def cb(h, l):
         if not u.IsWindowVisible(h):
             return True
+        pid = wt.DWORD()
+        u.GetWindowThreadProcessId(h, ctypes.byref(pid))
+        if pid.value not in pids:
+            return True  # 只看 OpticStudio 名下的窗口(按进程,不按标题,防漏)
         n = u.GetWindowTextLengthW(h)
-        if n == 0:
-            return True
-        buf = ctypes.create_unicode_buffer(n + 1)
-        u.GetWindowTextW(h, buf, n + 1)
+        buf = ctypes.create_unicode_buffer(max(n + 1, 2))
+        if n:
+            u.GetWindowTextW(h, buf, n + 1)
         title = buf.value
-        if any(k in title for k in KEY + MAIN):
-            enabled = bool(u.IsWindowEnabled(h))
-            topmost = bool(u.GetWindowLongW(h, -20) & 0x8)  # WS_EX_TOPMOST
-            rect = wt.RECT()
-            u.GetWindowRect(h, ctypes.byref(rect))
-            out.append(dict(h=h, title=title, enabled=enabled, topmost=topmost,
-                            w=rect.right - rect.left, ht=rect.bottom - rect.top,
-                            x=rect.left, y=rect.top))
+        enabled = bool(u.IsWindowEnabled(h))
+        topmost = bool(u.GetWindowLongW(h, -20) & 0x8)  # WS_EX_TOPMOST
+        rect = wt.RECT()
+        u.GetWindowRect(h, ctypes.byref(rect))
+        out.append(dict(h=h, title=title, enabled=enabled, topmost=topmost,
+                        w=rect.right - rect.left, ht=rect.bottom - rect.top,
+                        x=rect.left, y=rect.top, pid=pid.value))
         return True
 
     u.EnumWindows(cb, 0)
@@ -52,17 +55,43 @@ def find(wins):
     return (dlg or [None])[0], (sorted(main, key=lambda w: -w["w"]) or [None])[0]
 
 
+def optic_pids():
+    """OpticStudio.exe 的全部进程 PID(含 standalone 实例)。"""
+    import subprocess
+    out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq OpticStudio.exe", "/FO", "CSV"],
+                         capture_output=True).stdout.decode("gbk", errors="replace")
+    pids = set()
+    for line in out.splitlines():
+        if "OpticStudio" not in line:
+            continue
+        parts = [x.strip('"') for x in line.split('","')]
+        try:
+            pids.add(int(parts[1]))
+        except Exception:
+            pass
+    return pids
+
+
 def fix():
+    pids = optic_pids()
     wins = all_windows()
     dlg, main = find(wins)
     if not main:
         print("没找到 Zemax 主窗口,先打开 Zemax")
         return
-    if main and not main["enabled"]:
-        u.EnableWindow(main["h"], True)
-        print("已解锁主窗口(之前被小窗锁住了)")
-    elif main:
-        print("主窗口本来就是可点的,不用解锁")
+
+    # 根治:模态小窗会把 OpticStudio 名下所有窗口(主窗/镜头数据编辑器/图形窗...)全部禁用,
+    # 逐个解回来 —— 不止主窗口
+    unlocked = []
+    for w in wins:
+        if w["pid"] in pids and not w["enabled"] and w["h"] != (dlg or {}).get("h"):
+            u.EnableWindow(w["h"], True)
+            unlocked.append(w["title"][:20] or hex(w["h"]))
+    if unlocked:
+        print("已解锁 %d 个被禁用的窗口: %s" % (len(unlocked), " / ".join(unlocked)))
+    else:
+        print("没有窗口处于被禁用状态,不用解锁")
+
     if not dlg:
         print("没找到交互扩展小窗:先点 编程 → 交互扩展 把它打开,再跑一次本脚本")
         return
