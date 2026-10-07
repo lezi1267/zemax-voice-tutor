@@ -176,12 +176,13 @@ def _pick_output_index() -> int | None:
 class EdgeTTSService(TTSService):
     """微软 Edge 朗读接口(免费,无 key):边收边解码,非官方接口,失效就 .env 切回 piper。"""
 
-    def __init__(self, *, voice: str, **kwargs):
+    def __init__(self, *, voice: str, speed: float = 1.0, **kwargs):
         super().__init__(
             settings=TTSSettings(model=None, voice=voice, language=Language.ZH),
             **kwargs,
         )
         self._edge_voice = voice
+        self._edge_speed = speed  # 1.0 正常,0.7 快 43% → 换算成微软的 rate 百分比
 
     async def _edge_pcm_stream(self, text: str) -> AsyncGenerator[bytes, None]:
         """从微软接口流式取 mp3,后台线程边收边解码,逐块吐 24k s16 PCM。"""
@@ -322,7 +323,10 @@ async def run_bot(transport) -> None:
     # 念:三引擎。.env 里 TTS_ENGINE=piper(本地快)/edge(微软免费,播音级)/minimax(云端,要 key)
     engine = os.getenv("TTS_ENGINE", "piper").lower()
     if engine == "edge":
-        tts = EdgeTTSService(voice=os.getenv("EDGE_VOICE", "zh-CN-XiaoxiaoNeural"))
+        tts = EdgeTTSService(
+            voice=os.getenv("EDGE_VOICE", "zh-CN-XiaoyiNeural"),
+            speed=float(os.getenv("VOICE_SPEED", "1.0")),
+        )
     elif engine == "minimax":
         import aiohttp
 
