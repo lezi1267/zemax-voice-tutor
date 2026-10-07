@@ -12,3 +12,4 @@ zospy==2.2.0
 pywin32==312
 pywinauto==0.6.9
 comtypes==1.4.17
+rapidocr-onnxruntime==1.2.3

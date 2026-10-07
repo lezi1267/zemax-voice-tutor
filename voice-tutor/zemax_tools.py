@@ -378,3 +378,87 @@ point_at_schema = FunctionSchema(
     required=["name"],
     handler=_point_at_handler,
 )
+
+
+# ---------- OCR 读屏:补 API/UIA 的盲区(图上的标注、赛德尔系数表、报错弹窗等) ----------
+
+_ocr = None
+_last_screen = (0.0, None)  # (时间, 结果),10 秒内复用,防 GLM 连呼刷屏
+
+
+def _get_ocr():
+    """RapidOCR 单例:模型加载要几秒,只做一次。首次调用在 worker 线程里发生,不挡语音。"""
+    global _ocr
+    if _ocr is None:
+        from rapidocr_onnxruntime import RapidOCR
+
+        _ocr = RapidOCR()
+    return _ocr
+
+
+def _ocr_lines(img) -> list:
+    """PIL Image → 按阅读顺序的文字行 [{text,x,y}],低置信度的不要。"""
+    if hasattr(img, "save"):  # PIL 只认 ndarray:RGB 转 cv2 的 BGR
+        import numpy as np
+
+        img = np.asarray(img)[:, :, ::-1]
+    result, _ = _get_ocr()(img)
+    lines = []
+    for box, text, score in result or []:
+        try:
+            if float(score) < 0.55:  # 这版 score 是字符串
+                continue
+        except (TypeError, ValueError):
+            pass  # 没给置信度就保留
+        lines.append({
+            "text": text,
+            "x": int(min(p[0] for p in box)),
+            "y": int(min(p[1] for p in box)),
+        })
+    lines.sort(key=lambda l: (l["y"] // 24, l["x"]))  # 同一水平带算一行,行内从左到右
+    return lines
+
+
+def _read_screen_sync():
+    """截全屏 → OCR。阻塞,worker 线程专用。"""
+    from PIL import ImageGrab
+
+    img = ImageGrab.grab()
+    lines = _ocr_lines(img)
+    return {
+        "屏幕宽高": list(img.size),
+        "文字行数": len(lines),
+        "文字行": lines[:120],
+        "说明": "x/y 是文字左上角的屏幕坐标,按从上到下从左到右排列" if lines else "屏幕上没认出文字",
+    }
+
+
+async def _read_screen_handler(params) -> None:
+    global _last_screen
+    import time
+
+    import chat_window
+
+    if time.time() - _last_screen[0] < 10:
+        await params.result_callback(_last_screen[1])
+        return
+    chat_window.log("系统", "正在读屏(OCR),几秒钟……")
+    try:
+        result = await asyncio.wait_for(asyncio.to_thread(_read_screen_sync), timeout=45)
+    except Exception as e:
+        result = {"error": f"读屏失败:{e}"}
+    _last_screen = (time.time(), result)
+    await params.result_callback(result)
+
+
+read_screen_schema = FunctionSchema(
+    name="read_screen",
+    description=(
+        "OCR 读屏:把学生屏幕上的文字读出来(带位置坐标)。Zemax 的 API 和界面自动化读不到的"
+        "内容用它——赛德尔系数图/分析图上的标注和数值、弹出的小窗、报错提示等。"
+        "学生问'屏幕上/图上写的什么'时也调用它。"
+    ),
+    properties={},
+    required=[],
+    handler=_read_screen_handler,
+)

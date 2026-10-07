@@ -88,7 +88,7 @@ import chat_window
 import lessons
 import zemax_tools
 from lessons import read_lesson_schema, finish_lesson_schema, save_step_schema
-from zemax_tools import point_at_schema, read_analysis_schema, read_lde_schema
+from zemax_tools import point_at_schema, read_analysis_schema, read_lde_schema, read_screen_schema
 
 load_dotenv(override=True)
 
@@ -110,6 +110,7 @@ SYSTEM = (
     "每次下达新的操作步骤后调用 save_step 记断点(step 一句话复述该步),学生重启程序后能接着学;"
     "学生说'继续/接着上次的':调 read_lesson(课号填档案当前课),档案里'断点'还在就从那步的下一步直接带,不重念课件、不重复已给步骤。"
     "EFFL 之类的数:read_analysis 返回里有 近轴EFL_mm,用实测值,不要自己估。"
+    "API 读不到的屏幕内容(赛德尔系数图、图上标注、弹窗报错):调用 read_screen 读屏,读到的字直接用。"
     "带课时注意:学生系统的实际状态(孔径/像面位置)可能和课件前提不同,"
     "先用 read_lde 读实际值,按实际状态调整教学(比如课件说 EPD20 而实际是 10,就按 10 讲)。"
     "学生对图形读数报的数字:先对照单位和理论方向检查,明显不合理(如 Ray Fan 边缘 215mm)"
@@ -379,7 +380,7 @@ async def run_bot(transport) -> None:
         ),
     )
 
-    context = LLMContext(tools=[read_lesson_schema, read_lde_schema, read_analysis_schema, point_at_schema, finish_lesson_schema, save_step_schema])
+    context = LLMContext(tools=[read_lesson_schema, read_lde_schema, read_analysis_schema, point_at_schema, finish_lesson_schema, save_step_schema, read_screen_schema])
     user_agg, assistant_agg = LLMContextAggregatorPair(
         context,
         user_params=LLMUserAggregatorParams(
@@ -437,9 +438,27 @@ def _zemax_running() -> bool:
         return False
 
 
+def _startup_checks():
+    """启动自检:硬伤在开场前就喊出来,别等学生开口才发现。"""
+    if not os.getenv("GLM_API_KEY"):
+        chat_window.log("系统", "警告:.env 里没配 GLM_API_KEY,她答不了话。去 open.bigmodel.cn 申请,填进 voice-tutor\\.env 后重启。")
+    try:
+        import pyaudio
+
+        p = pyaudio.PyAudio()
+        mics = sum(1 for i in range(p.get_device_count())
+                   if p.get_device_info_by_index(i)["maxInputChannels"] > 0)
+        p.terminate()
+        if not mics:
+            chat_window.log("系统", "警告:没找到麦克风,她听不见你说话。插上麦克风/耳机后重启。")
+    except Exception as e:
+        chat_window.log("系统", f"警告:麦克风检测失败({e}),语音输入可能不可用。")
+
+
 async def main():
     _kill_stale_bots()
     chat_window.start()
+    _startup_checks()
     transport = LocalAudioTransport(
         LocalAudioTransportParams(
             audio_in_enabled=True,

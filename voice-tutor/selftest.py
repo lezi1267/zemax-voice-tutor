@@ -150,6 +150,20 @@ async def main():
     except Exception as e:
         report("对话窗口", False, str(e)[:60])
 
+    # 6) OCR 读屏引擎:合成一张带已知数字的图实测识别,不依赖屏幕内容
+    try:
+        from PIL import Image, ImageDraw
+
+        img = Image.new("RGB", (420, 140), "white")
+        d = ImageDraw.Draw(img)
+        d.text((20, 20), "RMS 3.14 um", fill="black")
+        d.text((20, 70), "EFFL 108.04 mm", fill="black")
+        lines = zemax_tools._ocr_lines(img)
+        joined = " ".join(l["text"] for l in lines)
+        report("OCR 引擎(合成图实测)", "3.14" in joined or "108.04" in joined, joined[:40])
+    except Exception as e:
+        report("OCR 引擎(合成图实测)", False, str(e)[:60])
+
     fails = [r for r in results if r[0] == "FAIL"]
     print(f"\n=== 自检完成: {len(results)-len(fails)}/{len(results)} 通过 ===", flush=True)
 
