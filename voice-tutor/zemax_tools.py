@@ -58,11 +58,11 @@ async def warm_connect(timeout: float = 25):
 
 
 
-def _read_lde_sync():
-    """阻塞连接+读数,只准在 asyncio.to_thread 的 worker 线程里跑。"""
-    oss = _connect_sync()
+def _lde_snapshot(oss):
+    """读 LDE 全部面参数 + 孔径,返回 dict。阻塞,worker 线程专用。"""
     import dialog_fix
-    dialog_fix.fix()
+
+    dialog_fix.fix()  # 每次读数前驯一次:学生重开小窗会重新锁人
     lde = oss.LDE
     rows = []
     for i in range(lde.NumberOfSurfaces):
@@ -101,6 +101,12 @@ def _read_lde_sync():
         "系统孔径": {"类型": str(ap.ApertureType), "值": ap.ApertureValue},
     }
     return result
+
+
+def _read_lde_sync():
+    """阻塞连接+读数,只准在 asyncio.to_thread 的 worker 线程里跑。"""
+    oss = _connect_sync()
+    return _lde_snapshot(oss)
 
 
 async def _read_lde_handler(params) -> None:
@@ -157,7 +163,9 @@ def _read_analysis_sync():
         a.ToFile(tmp)
         text = open(tmp, encoding="utf-8", errors="replace").read()
         vals = _parse_values(text, ["RMS光斑半径", "RMS Radius"])
-        return {"RMS光斑半径_um": vals.get("RMS光斑半径", vals.get("RMS Radius"))}
+        r = {"RMS光斑半径_um": vals.get("RMS光斑半径", vals.get("RMS Radius"))}
+        r["当前结构"] = _lde_snapshot(oss)  # 一次调用连结构一起给,免得 GLM 反复再调
+        return r
     finally:
         try:
             a.Close()  # 别在学生 GUI 里留一排分析窗口
@@ -165,10 +173,19 @@ def _read_analysis_sync():
             pass
 
 
-async def _read_analysis_handler(params) -> None:
-    global _conn
-    import chat_window
+_last_analysis = (0.0, None)  # (时间, 结果),15 秒内复用,防 GLM 连呼刷屏
 
+
+async def _read_analysis_handler(params) -> None:
+    global _conn, _last_analysis
+    import chat_window
+    import time
+
+    if time.time() - _last_analysis[0] < 15:
+        r = dict(_last_analysis[1])
+        r["缓存"] = "这是15秒内的结果,直接用,别再调"
+        await params.result_callback(r)
+        return
     chat_window.log("系统", "正在跑点列图分析,几秒钟……")
     try:
         result = await asyncio.wait_for(asyncio.to_thread(_read_analysis_sync), timeout=30)
@@ -206,12 +223,20 @@ read_lde_schema = FunctionSchema(
 )
 
 
+_last_point = ("", 0.0)  # (目标名, 时间),30 秒内同目标不重复指
+
+
 async def _point_at_handler(params) -> None:
     import chat_window
+    import time
 
     name = str((params.arguments or {}).get("name", "")).strip()
     if not name:
         await params.result_callback({"error": "没说要点哪里,请给界面元素的名字"})
+        return
+    if name in _last_point[0] and time.time() - _last_point[1] < 30:
+        await params.result_callback({"ok": True, "already": True,
+                                     "提示": "30秒内已经指过这里了,直接告诉学生下一步"})
         return
 
     chat_window.log("系统", f"正在找「{name}」的位置……")
@@ -248,6 +273,7 @@ async def _point_at_handler(params) -> None:
         })
         return
     t, x, y = best
+    _last_point = (name, time.time())
     import guide
 
     guide.guide_to(x, y, f"点「{t}」", secs=8)
