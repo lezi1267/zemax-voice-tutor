@@ -71,13 +71,21 @@ async def main():
 
     zr = zemax_ready()
     if zr:
-        r = await run_tool(zemax_tools._read_lde_handler)
-        report("read_lde(实测)", "error" not in r, f"面数={r.get('面数')}" if "error" not in r else r["error"][:60])
-        r = await run_tool(zemax_tools._read_analysis_handler)
-        rms = r.get("RMS光斑半径_um")
-        report("read_analysis(实测)", rms is not None, f"RMS={rms}" if rms else str(r)[:60])
-        r = await run_tool(zemax_tools._point_at_handler, {"name": "绘图"})
-        report("point_at(实测)", r.get("ok") is True, f"指向={r.get('指向')}" if r.get("ok") else str(r)[:60])
+        for name, handler, args in [
+                ("read_lde", zemax_tools._read_lde_handler, None),
+                ("read_analysis", zemax_tools._read_analysis_handler, None),
+                ("point_at", zemax_tools._point_at_handler, {"name": "绘图"})]:
+            r = await run_tool(handler, args)
+            if "error" in r and "交互扩展" in r["error"]:
+                report(name, None, "交互扩展没开,跳过(线上会返回友好提示)")
+                break
+            if name == "read_lde":
+                report(name, "error" not in r, f"面数={r.get('面数')}" if "error" not in r else r["error"][:60])
+            elif name == "read_analysis":
+                rms = r.get("RMS光斑半径_um")
+                report(name, rms is not None, f"RMS={rms}" if rms else str(r)[:60])
+            else:
+                report(name, r.get("ok") is True, f"指向={r.get('指向')}" if r.get("ok") else str(r)[:60])
     else:
         for n in ("read_lde", "read_analysis", "point_at"):
             report(n, None, "Zemax 没开或交互扩展没开,跳过(线上会返回友好提示)")
