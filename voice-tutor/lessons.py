@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """课程工具:课程表/课件读取 + 学习档案(progress.json)+ 验收进度记录。"""
 import json
+import os
 import time
 from pathlib import Path
 
@@ -11,15 +12,24 @@ PROGRESS = Path(__file__).resolve().parent / "progress.json"  # 学习档案在 
 
 
 def load_progress() -> dict:
-    """读学习档案;没有就返回初始档案。"""
+    """读学习档案;没有就返回初始档案。档案读坏了不悄悄丢掉 —— 先留一份 .bak 再回初始值。"""
     try:
         return json.loads(PROGRESS.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {"done": [], "current": 0, "log": []}
     except Exception:
+        try:
+            PROGRESS.with_suffix(".json.bak").write_bytes(PROGRESS.read_bytes())
+        except Exception:
+            pass
         return {"done": [], "current": 0, "log": []}
 
 
 def save_progress(p: dict):
-    PROGRESS.write_text(json.dumps(p, ensure_ascii=False, indent=2), encoding="utf-8")
+    """原子写:先写临时文件再 os.replace。写一半断电不会把学生的档案变成半截 JSON。"""
+    tmp = PROGRESS.with_suffix(".tmp")
+    tmp.write_text(json.dumps(p, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, PROGRESS)
 
 
 def _days_since_last(p: dict) -> float | None:

@@ -276,6 +276,27 @@ class EdgeTTSService(TTSService):
             yield ErrorFrame(error=str(e))
 
 
+class _TTSPolish:
+    """给 TTS 兜两层底:先擦掉 markdown/emoji 再合成,并把真正念出来的句子记进对话小窗。
+
+    以前只有 edge 这条路做这两件事 —— minimax/piper 会把 emoji 念成"表情"怪声,
+    而且小窗里只有学生的话,看不到助教说了什么。"""
+
+    async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame, None]:
+        text = _plain(text)
+        chat_window.log("助教", text)
+        async for f in super().run_tts(text, context_id):
+            yield f
+
+
+class PolishedPiper(_TTSPolish, PiperTTSService):
+    pass
+
+
+class PolishedMiniMax(_TTSPolish, MiniMaxHttpTTSService):
+    pass
+
+
 class ChatLogObserver(BaseObserver):
     """抓学生的语音转写(最终句)投进对话记录小窗。帧会流过多个处理器,按 id 去重。
     助教的话不在这里抓 —— 由 TTS 合成入口记录,那才是她真正念出来的内容。"""
@@ -348,6 +369,10 @@ async def run_bot(transport) -> None:
     )
     # 念:三引擎。.env 里 TTS_ENGINE=piper(本地快)/edge(微软免费,播音级)/minimax(云端,要 key)
     engine = os.getenv("TTS_ENGINE", "piper").lower()
+    if engine == "minimax" and not os.getenv("MINIMAX_API_KEY"):
+        # 新克隆默认就是 minimax,没 key 会一路静默没声音 —— 直接退到免费的 edge
+        chat_window.log("系统", "TTS_ENGINE=minimax 但 .env 没配 MINIMAX_API_KEY:自动改用免费的 edge。")
+        engine = "edge"
     if engine == "edge":
         tts = EdgeTTSService(
             voice=os.getenv("EDGE_VOICE", "zh-CN-XiaoyiNeural"),
@@ -360,7 +385,7 @@ async def run_bot(transport) -> None:
         group_id = os.getenv("MINIMAX_GROUP_ID", "").strip()
         base_url = os.getenv("MINIMAX_BASE_URL", "https://api.minimaxi.com/v1/t2a_v2")
         session = aiohttp.ClientSession()
-        tts = MiniMaxHttpTTSService(
+        tts = PolishedMiniMax(
             api_key=os.getenv("MINIMAX_API_KEY"),
             group_id=group_id,
             # 国内开放平台是 minimaxi.com(多个 i);pipecat 默认的国际站才是 minimax.io
@@ -377,7 +402,7 @@ async def run_bot(transport) -> None:
             # pipecat 会无条件拼 ?GroupId=,实测空参数会被服务端拒;新 key 不需要这个参数
             tts._base_url = base_url
     else:
-        tts = PiperTTSService(voice_id=VOICE)
+        tts = PolishedPiper(voice_id=VOICE)
     # 脑:智谱 GLM。glm-4.5-air 实测 1.3 秒回答,知识比 glm-4-flash 深;关思考模式(语音等不起长思考)
     llm = OpenAILLMService(
         api_key=os.getenv("GLM_API_KEY"),

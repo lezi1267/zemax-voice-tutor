@@ -60,6 +60,22 @@ async def main():
            efl == 108.031 and neg == -50.0 and "EFL_error" in none,
            f"EFL={efl} 负系统={neg} 无数据={'EFL_error' in none}")
 
+    # 1c) 分析文本解析(合成样本,不依赖 Zemax)
+    vals = zemax_tools._parse_values(
+        "RMS Radius: 0.0123\n没有冒号的行\nRMS光斑半径: 0.5\nRMS Radius: 不是数\n",
+        ["RMS Radius", "RMS光斑半径"])
+    ray = zemax_tools._parse_rayfan(
+        "Ray Fan\n\nTable series: 子午,视场号= 1\n   1.0000000     0.0000000\n"
+        "   0.5000000    -0.0100000\n  -1.0000000     0.0200000\n\n"
+        "Table series: 弧矢,视场号 =2\n   1.0000000     0.0300000\n  -1.0000000    -0.0400000\n")
+    report("分析文本解析(RMS + RayFan 上下缘 + 视场号写法)",
+           vals.get("RMS Radius") == 0.0123 and vals.get("RMS光斑半径") == 0.5
+           and ray.get("RayFan_子午_视场1_上缘") == 0.0
+           and ray.get("RayFan_子午_视场1_下缘") == 0.02
+           and ray.get("RayFan_弧矢_视场2_上缘") == 0.03
+           and ray.get("RayFan_弧矢_视场2_下缘") == -0.04,
+           f"{vals} {ray}")
+
     # 2) 课程工具 + 学习档案
     def mk_params(args=None):
         state = {}
@@ -275,6 +291,7 @@ async def main():
 
     fails = [r for r in results if r[0] == "FAIL"]
     print(f"\n=== 自检完成: {len(results)-len(fails)}/{len(results)} 通过 ===", flush=True)
+    sys.exit(1 if fails else 0)  # 有 FAIL 就非零退出(以前永远退 0,脚本没法判断)
 
 
 if __name__ == "__main__":

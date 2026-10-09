@@ -10,6 +10,7 @@ import math
 import os
 import re
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -23,6 +24,9 @@ import zospy as zp
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 
 _conn = None  # (oss, zos),启动时建立并长驻;出错/超时清空,下次重连
+# ponytail: 一把全局锁。ZOS-API 的 COM 对象不是线程安全的,GLM 一轮里可能同时调
+# read_lde 和 read_analysis,两个 worker 线程共用同一个连接会炸。升级路径:每个连接一把锁。
+_zemax_lock = threading.Lock()
 
 
 def _enabled():
@@ -76,11 +80,16 @@ def _disconnect_now():
         _conn = None
 
 
+def _connect_locked():
+    with _zemax_lock:
+        return _connect_sync()
+
+
 async def warm_connect(timeout: float = 25):
     """启动时连接并长驻(学生要的);连接会锁主窗口,连上立即用 dialog_fix 驯服解锁。
     学生中途重开交互扩展会再次锁人,所以每次工具调用前也会再驯一次。"""
     try:
-        await asyncio.wait_for(asyncio.to_thread(_connect_sync), timeout=timeout)
+        await asyncio.wait_for(asyncio.to_thread(_connect_locked), timeout=timeout)
         logger.info("Zemax 已连接(交互扩展,长驻),主窗口已解锁")
     except Exception as e:
         logger.warning(f"启动时连 Zemax 失败(用到时还会再试): {e}")
@@ -134,8 +143,8 @@ def _lde_snapshot(oss):
 
 def _read_lde_sync():
     """阻塞连接+读数,只准在 asyncio.to_thread 的 worker 线程里跑。"""
-    oss = _connect_sync()
-    return _lde_snapshot(oss)
+    with _zemax_lock:
+        return _lde_snapshot(_connect_sync())
 
 
 async def _read_lde_handler(params) -> None:
@@ -186,7 +195,9 @@ def _parse_rayfan(text: str) -> dict:
         if "Table series" in line:
             series = line.split(":", 1)[-1].strip()
             tag = ("子午" if "子午" in series else "弧矢" if "弧矢" in series else series[:6])
-            field = "视场?" if "视场号" not in series else "视场" + series.split("视场号")[1].split()[0].lstrip("=")
+            # 视场号写法不固定:"视场号= 1" / "视场号 =1" / "视场号 1" 都得认
+            m = re.search(r"视场号\s*=?\s*(\d+)", series)
+            field = f"视场{m.group(1)}" if m else "视场?"
             key_head = f"RayFan_{tag}_{field}"
             continue
         if series is None:
@@ -274,15 +285,16 @@ def _cardinal_part(oss):
 
 def _read_analysis_sync():
     """点列图 RMS + RayFan 边缘 + Cardinal Points 焦距 + LDE 结构快照,一次全给。阻塞,worker 线程专用。"""
-    oss = _connect_sync()
-    import dialog_fix
+    with _zemax_lock:
+        oss = _connect_sync()
+        import dialog_fix
 
-    dialog_fix.fix()
-    out = _spot_part(oss)
-    out.update(_rayfan_part(oss))
-    out.update(_cardinal_part(oss))
-    out["当前结构"] = _lde_snapshot(oss)
-    return out
+        dialog_fix.fix()
+        out = _spot_part(oss)
+        out.update(_rayfan_part(oss))
+        out.update(_cardinal_part(oss))
+        out["当前结构"] = _lde_snapshot(oss)
+        return out
 
 _last_analysis = (0.0, None)  # (时间, 结果),15 秒内复用,防 GLM 连呼刷屏
 
@@ -482,7 +494,7 @@ async def _read_screen_handler(params) -> None:
 
     import chat_window
 
-    if time.time() - _last_screen[0] < 10:
+    if _last_screen[1] is not None and time.time() - _last_screen[0] < 10:
         await params.result_callback(_last_screen[1])
         return
     chat_window.log("系统", "正在读屏(OCR),几秒钟……")
@@ -490,7 +502,8 @@ async def _read_screen_handler(params) -> None:
         result = await asyncio.wait_for(asyncio.to_thread(_read_screen_sync), timeout=45)
     except Exception as e:
         result = {"error": f"读屏失败:{e}"}
-    _last_screen = (time.time(), result)
+    if "error" not in result:
+        _last_screen = (time.time(), result)  # 只缓存成功结果,失败下次真重试
     await params.result_callback(result)
 
 

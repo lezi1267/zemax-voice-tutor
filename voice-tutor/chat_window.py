@@ -36,5 +36,9 @@ def _append(root, speaker, text):
     tag = {"你": "you", "助教": "bot"}.get(speaker, "sys")
     _txt.config(state="normal")
     _txt.insert("end", f"{speaker}:{text}\n\n", tag)
+    # 一整晚的课会把小窗撑到几万行:只留最近 400 行
+    n_lines = int(_txt.index("end-1c").split(".")[0])
+    if n_lines > 400:
+        _txt.delete("1.0", f"{n_lines - 400}.0")
     _txt.see("end")
     _txt.config(state="disabled")
