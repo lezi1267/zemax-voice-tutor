@@ -1,8 +1,0 @@
-﻿.venv\Scripts\python.exe : 2026-10-09 23:37:34.530 | INFO     | pipecat:<module>:54 - \u14da\u160f\u15e2 Pipecat 1.12.0
- (Python 3.13.14 (tags/v3.13.14:fd17997, Jun 10 2026, 13:03:48) [MSC v.1944 64 bit (AMD64)]) \u14da\u160f\u15e2
-所在位置 行:1 字符: 246
-+ ... ilentlyContinue; .venv\Scripts\python.exe check_names.py 2>&1 | Out-F ...
-+                      ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    + CategoryInfo          : NotSpecified: (2026-10-09 23:3...4da\u160f\u15e2:String) [], RemoteException
-    + FullyQualifiedErrorId : NativeCommandError
- 
