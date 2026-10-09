@@ -46,9 +46,11 @@ def speak(text, wav=None):
                      creationflags=0x08000000)  # CREATE_NO_WINDOW
 
 
-def guide_to(x, y, text, secs=8, wav=None):
-    """对外接口:在 (x,y) 处指指点点。投给 Tk owner 线程,不阻塞调用方。"""
-    speak(text, wav)
+def guide_to(x, y, text, secs=8, wav=None, voice=True):
+    """对外接口:在 (x,y) 处指指点点。投给 Tk owner 线程,不阻塞调用方。
+    voice=False 只画不念 —— 语音助教自己会说话,别用系统 TTS 抢她的嗓子(还会被麦克风收回去)。"""
+    if voice:
+        speak(text, wav)
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "voice-tutor"))
     import ui
 

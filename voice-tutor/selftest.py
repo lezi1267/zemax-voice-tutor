@@ -5,8 +5,16 @@
 import asyncio
 import json
 import os
+import shutil
 import sys
+import tempfile
 import time
+from pathlib import Path
+
+# 中文 Windows 上 stdout 一旦被重定向/管道就走 GBK,遇到 ³ ≈ 这类字符直接 UnicodeEncodeError 崩掉。
+for _s in (sys.stdout, sys.stderr):
+    if hasattr(_s, "reconfigure"):
+        _s.reconfigure(encoding="utf-8", errors="replace")
 
 results = []
 
@@ -21,6 +29,16 @@ async def main():
     import bot
     import zemax_tools
     import lessons
+
+    # 学习档案沙盒:自检绝不碰真实的 progress.json。
+    # (以前它把第 2 课写进"已完成"、往日志里塞自检测试,跑一次就把学生档案弄脏了。)
+    real_progress = lessons.PROGRESS
+    real_before = real_progress.read_bytes() if real_progress.exists() else None
+    sandbox_dir = Path(tempfile.mkdtemp())
+    lessons.PROGRESS = sandbox_dir / "progress.json"
+    if real_progress.exists():
+        shutil.copy(real_progress, lessons.PROGRESS)
+
     report("模块导入 + 静态名字检查", True, "check_names 由调用方先行执行")
 
     # 1) 文本清洗
@@ -28,6 +46,19 @@ async def main():
     clean = bot._plain(dirty)
     bad = [ch for ch in clean if ch in "*#`" or ord(ch) >= 0x1F000]
     report("TTS 文本清洗(emoji/markdown/数学符号)", not bad and "微米" in clean and "约等于" in clean, clean[:40])
+
+    # 1b) Cardinal Points 文本解析(不依赖 Zemax:拿 Zemax 输出格式的合成样本)
+    sample = ("Cardinal Points\n\nStarting Surface:  1\nEnding Surface:  4\nWavelength:  1\n"
+              "Orientation:  Y-Z\nLens units:  mm\n\n"
+              "                  Object Space   Image Space\n"
+              "Focal Length:     -108.031       108.031\n"
+              "Principal Planes: -108.031       108.031\n")
+    efl = zemax_tools._parse_cardinal(sample).get("EFL_mm")
+    neg = zemax_tools._parse_cardinal("Focal Length:     50.000       -50.000\n").get("EFL_mm")
+    none = zemax_tools._parse_cardinal("Cardinal Points\nFocal Lengths:\n")
+    report("Cardinal Points 解析(取像方焦距/负系统/无数据)",
+           efl == 108.031 and neg == -50.0 and "EFL_error" in none,
+           f"EFL={efl} 负系统={neg} 无数据={'EFL_error' in none}")
 
     # 2) 课程工具 + 学习档案
     def mk_params(args=None):
@@ -120,7 +151,9 @@ async def main():
                 report(name, "error" not in r, f"面数={r.get('面数')}" if "error" not in r else r["error"][:60])
             elif name == "read_analysis":
                 rms = r.get("RMS光斑半径_um")
-                report(name, rms is not None, f"RMS={rms}" if rms else str(r)[:60])
+                efl = r.get("EFL_mm")
+                report(name, rms is not None and efl is not None,
+                       f"RMS={rms} EFL={efl}" if rms else str(r)[:60])
             else:
                 report(name, r.get("ok") is True, f"指向={r.get('指向')}" if r.get("ok") else str(r)[:60])
     else:
@@ -232,6 +265,13 @@ async def main():
                    f"音频{hex_len // 2}字节" if hex_len else f"HTTP {status} {msg}")
         except Exception as e:
             report("Minimax TTS", False, str(e)[:60])
+
+    # 沙盒收尾:真实学习档案必须一个字节都没变
+    real_after = real_progress.read_bytes() if real_progress.exists() else None
+    lessons.PROGRESS = real_progress
+    shutil.rmtree(sandbox_dir, ignore_errors=True)
+    report("学习档案未被自检改动", real_after == real_before,
+           "progress.json 字节一致" if real_after == real_before else "档案被改了!检查 lessons.PROGRESS 是否被绕过")
 
     fails = [r for r in results if r[0] == "FAIL"]
     print(f"\n=== 自检完成: {len(results)-len(fails)}/{len(results)} 通过 ===", flush=True)

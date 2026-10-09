@@ -61,18 +61,27 @@ def close_standalone(zos):
 
 
 if __name__ == "__main__":
+    import sys
+
     oss, zos = get_system(verbose=False)
-    print("连接成功,开始读写自检...")
-    oss.new()                                   # 重置为空白系统(刚打开的 Zemax 里没有未保存内容才安全)
+    print("连接成功,开始读自检...")
     n = oss.LDE.NumberOfSurfaces
-    stop = oss.LDE.GetSurfaceAt(1)              # 0=物面 1=光阑 2=像面
-    stop.Radius = 100.0                         # 写
-    back = oss.LDE.GetSurfaceAt(1).Radius       # 读
+    s1 = oss.LDE.GetSurfaceAt(1)              # 0=物面 1=光阑 2=像面
     print("LDE 面数: %d(物面/光阑/像面)" % n)
-    print("光阑面半径: 写入 100.0 → 读回 %s" % back)
-    assert abs(float(back) - 100.0) < 1e-6, "读写不一致!"
+    print("光阑面: R=%s T=%s 材料=%s" % (s1.Radius, s1.Thickness, s1.Material))
     ap = oss.SystemData.Aperture
     print("系统孔径类型: %s, 值: %s" % (ap.ApertureType, ap.ApertureValue))
-    print("自检通过:API 可读可写,延迟毫秒级。")
-    stop.Radius = 0                             # 恢复光阑半径为无穷大(0=Infinity),不留测试痕迹
+
+    if "--new" in sys.argv:
+        # 只有显式 --new 才动数据:oss.new() 会清空学生当前镜头,写半径也会改他的设计
+        oss.new()
+        oss.LDE.GetSurfaceAt(1).Radius = 100.0
+        back = oss.LDE.GetSurfaceAt(1).Radius
+        assert abs(float(back) - 100.0) < 1e-6, "读写不一致!"
+        print("写入 100.0 → 读回 %s" % back)
+        oss.LDE.GetSurfaceAt(1).Radius = 0.0   # 恢复成无穷大,不留测试痕迹
+    else:
+        print("只读自检(没改任何数据)。要测写入:python zemax_api.py --new(会清空当前镜头!)")
+
+    print("自检通过:API 可读,延迟毫秒级。")
     zos.disconnect()                            # 只断开连接,不会关你打开的 Zemax

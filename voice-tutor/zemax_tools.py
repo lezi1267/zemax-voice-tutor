@@ -8,6 +8,7 @@ import asyncio
 import atexit
 import math
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -238,45 +239,49 @@ def _rayfan_part(oss):
             pass
 
 
+def _parse_cardinal(text: str) -> dict:
+    """Cardinal Points 文本 → EFL_mm。数据行形如 'Focal Length:  -108.031  108.031'(物方 像方),取像方。"""
+    for line in text.splitlines():
+        if line.lstrip("\ufeff ").startswith("Focal Length"):
+            nums = re.findall(r"-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?", line.split(":", 1)[-1])
+            if len(nums) >= 2:
+                return {"EFL_mm": float(nums[1])}
+            if nums:
+                return {"EFL_mm": float(nums[0])}
+    return {"EFL_error": "Cardinal Points 输出里没找到 Focal Length 行,分析可能没跑成"}
+
+
+def _cardinal_part(oss):
+    """Cardinal Points 分析 → 实测有效焦距 EFL(mm,带符号)。
+
+    让 Zemax 自己算:反射面、任意玻璃、负焦距系统都对。
+    这里以前是手工近轴追迹 + 硬编码 5 种玻璃的折射率,遇到反射面和别的玻璃会静默算错。"""
+    import tempfile
+
+    a = oss.Analyses.New_Analysis(zp.constants.Analysis.AnalysisIDM.CardinalPoints)
+    try:
+        a.ApplyAndWaitForCompletion()
+        tmp = tempfile.mktemp(suffix=".txt")
+        a.ToFile(tmp)
+        text = open(tmp, encoding="utf-8", errors="replace").read()
+    finally:
+        try:
+            a.Close()
+        except Exception:
+            pass
+    return _parse_cardinal(text)
+
+
 def _read_analysis_sync():
-    """点列图 RMS + RayFan 边缘 + LDE 结构快照,一次全给。阻塞,worker 线程专用。"""
+    """点列图 RMS + RayFan 边缘 + Cardinal Points 焦距 + LDE 结构快照,一次全给。阻塞,worker 线程专用。"""
     oss = _connect_sync()
     import dialog_fix
 
     dialog_fix.fix()
     out = _spot_part(oss)
     out.update(_rayfan_part(oss))
-    snap = _lde_snapshot(oss)
-    out["当前结构"] = snap
-    try:
-        rows = snap["面参数"]
-        epd = float(snap["系统孔径"]["值"]) / 2.0
-        n_map = {"BK7": 1.5168, "F2": 1.6200, "SF2": 1.6475, "SK16": 1.6204, "F15": 1.6055}
-        y, u, n = epd, 0.0, 1.0  # 近轴 yu 追迹:物在无穷远,y=入瞳半高
-        for m in rows:
-            if str(m["面序号"]) == "0":
-                continue
-            glass = str(m["材料"]).strip()
-            n_after = n_map.get(glass, 1.0)  # 材料列 = 该面之后的介质;空 = 空气
-            Rv = m["半径"]
-            try:
-                R = float(Rv)
-                R = R if math.isfinite(R) else 0.0
-            except (TypeError, ValueError):
-                R = 0.0  # "无穷大" = 平面,光焦度 0
-            phi = (n_after - n) / R if R else 0.0
-            nu = n * u - y * phi          # 折射(每个面都做,包括玻璃→空气)
-            u = nu / n_after
-            n = n_after
-            try:
-                Tv = float(m["厚度"])
-                y += (Tv if math.isfinite(Tv) else 0.0) * u
-            except (TypeError, ValueError):
-                pass  # 像面厚度无穷大,不再转移
-        if abs(u) > 1e-12:
-            out["近轴EFL_mm"] = round(epd / abs(u), 2)
-    except Exception:
-        pass
+    out.update(_cardinal_part(oss))
+    out["当前结构"] = _lde_snapshot(oss)
     return out
 
 _last_analysis = (0.0, None)  # (时间, 结果),15 秒内复用,防 GLM 连呼刷屏
@@ -287,7 +292,7 @@ async def _read_analysis_handler(params) -> None:
     import chat_window
     import time
 
-    if time.time() - _last_analysis[0] < 15:
+    if _last_analysis[1] is not None and time.time() - _last_analysis[0] < 15:
         r = dict(_last_analysis[1])
         r["缓存"] = "这是15秒内的结果,直接用,别再调"
         await params.result_callback(r)
@@ -301,13 +306,16 @@ async def _read_analysis_handler(params) -> None:
     except Exception as e:
         _conn = None
         result = {"error": str(e)}
+    if "error" not in result:
+        _last_analysis = (time.time(), result)  # 只缓存成功结果
     await params.result_callback(result)
 
 
 read_analysis_schema = FunctionSchema(
     name="read_analysis",
     description=(
-        "读取学生当前 Zemax 的分析数据:点列图 RMS 光斑半径(单位 µm)和有效焦距(单位 mm)。"
+        "读取学生当前 Zemax 的分析数据:点列图 RMS 光斑半径(单位 µm)、RayFan 边缘光线读数、"
+        "有效焦距 EFL_mm(单位 mm,Zemax Cardinal Points 实测,带符号)。"
         "学生问'图怎么样''RMS 多少''焦距多少''成像好不好'时调用,拿真实数值回答。"
     ),
     properties={},
@@ -329,7 +337,7 @@ read_lde_schema = FunctionSchema(
 )
 
 
-_last_point = ("", 0.0)  # (目标名, 时间),5 分钟内同目标不重复指
+_last_point = ("", 0.0)  # (目标名, 时间),5 分钟内同一个目标不重复指
 
 
 async def _point_at_handler(params) -> None:
@@ -341,9 +349,9 @@ async def _point_at_handler(params) -> None:
     if not name:
         await params.result_callback({"error": "没说要点哪里,请给界面元素的名字"})
         return
-    if name in _last_point[0] and time.time() - _last_point[1] < 300:
+    if name == _last_point[0] and time.time() - _last_point[1] < 300:
         await params.result_callback({"ok": True, "already": True,
-                                     "提示": "30秒内已经指过这里了,直接告诉学生下一步"})
+                                      "提示": "5分钟内已经指过这里了,直接告诉学生下一步"})
         return
 
     chat_window.log("系统", f"正在找「{name}」的位置……")
@@ -383,7 +391,9 @@ async def _point_at_handler(params) -> None:
     _last_point = (name, time.time())
     import guide
 
-    guide.guide_to(x, y, f"点「{t}」", secs=8)
+    # voice=False:助教自己会念这一句。再让 guide 用系统 TTS 念一遍 = 两个声音,
+    # 而且外放会被麦克风收回去,变成她自己打断自己。
+    guide.guide_to(x, y, f"点「{t}」", secs=8, voice=False)
     await params.result_callback({
         "ok": True,
         "指向": t,
@@ -450,15 +460,19 @@ def _ocr_lines(img) -> list:
 
 def _read_screen_sync():
     """截全屏 → OCR。阻塞,worker 线程专用。"""
-    from PIL import ImageGrab
+    import shot
 
-    img = ImageGrab.grab()
+    img = shot.grab()  # DPI 感知 + 全部显示器 + 分层窗口(shot.py 已解决,别在这儿重抄一遍)
+    ox, oy = shot.origin()
     lines = _ocr_lines(img)
+    for l in lines:
+        l["x"] += ox
+        l["y"] += oy  # 换成屏幕绝对坐标,和 point_at / 小幽灵用的是同一套坐标
     return {
         "屏幕宽高": list(img.size),
         "文字行数": len(lines),
         "文字行": lines[:120],
-        "说明": "x/y 是文字左上角的屏幕坐标,按从上到下从左到右排列" if lines else "屏幕上没认出文字",
+        "说明": "x/y 是文字左上角的屏幕绝对坐标,按从上到下从左到右排列" if lines else "屏幕上没认出文字",
     }
 
 

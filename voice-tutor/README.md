@@ -32,7 +32,7 @@ cd D:\ASDF\aas\zemax\学习游戏\voice-tutor
 .venv\Scripts\python bot.py
 ```
 
-第一次跑会下载 whisper small(~460MB)和 piper 中文音色,走 HF 镜像,等几分钟。
+第一次跑会下载 SenseVoice 识别模型和 piper 中文音色(走 HF 镜像),等几分钟。
 之后秒起。
 
 ## 听到什么算通
@@ -47,9 +47,11 @@ cd D:\ASDF\aas\zemax\学习游戏\voice-tutor
 | LLM 模型 | `GLM_MODEL=glm-4.5-air`(实测 1.3 秒,已关思考) | 免费 `glm-4-flash` 知识浅;更强如 `glm-4.7` 思考慢,语音慎用 |
 | TTS 引擎 | `TTS_ENGINE=minimax`(实测首包 0.7s,音色 `MINIMAX_VOICE`) | 免费本地用 `piper`;微软免费播音级用 `edge`(首包 2~3s);minimax 新式 sk-api key 不用 GroupId,端点 `MINIMAX_BASE_URL=https://api.minimax.cn/v1/t2a_v2` |
 | STT 精度 | FunASR SenseVoice(实时率 0.08,中文识别全对) | whisper 在本机 CPU 实时率 1.29 不可用;要更快/更准再议 |
-| TTS 音色 | `VOICE = "zh_CN-xiao_ya-medium"`(只对 piper) | 换回 `zh_CN-huayan-medium` 即温柔女声;试听在 `samples\`;minimax 用 `MINIMAX_VOICE` |
+| TTS 音色 | `.env` 里 `PIPER_VOICE = "zh_CN-xiao_ya-medium"`(只对 piper) | 换回 `zh_CN-huayan-medium` 即温柔女声;试听在 `samples\`;minimax 用 `MINIMAX_VOICE` |
 | 语速 | `VOICE_SPEED=0.85`(只对 piper,越大越慢) | minimax 用 `MINIMAX_SPEED` |
 | 人设 | `SYSTEM` | 按课改 |
+
+试听音频不在仓库里(各家 TTS 的输出,有版权):`.venv\Scripts\python make_samples.py` 生成 edge 版到 `samples\`。
 
 中文可选音色(Piper 就这么多,都是本地免费):
 - `zh_CN-xiao_ya-medium` — 年轻女声,更活泼(**现用**);需要 g2pW 拼音模型(已下到本目录),重建环境时装 `piper-tts[zh]`
@@ -59,7 +61,8 @@ cd D:\ASDF\aas\zemax\学习游戏\voice-tutor
 ## 下一步(接 Zemax)
 
 - **已完成:read_lde** —— 问"我填了什么/帮我检查参数",实时读 LDE 和孔径(毫秒级)
-- **已完成:read_analysis** —— 问"图怎么样/RMS 多少",跑点列图报 RMS(µm)
+- **已完成:read_analysis** —— 问"图怎么样/RMS 多少",跑点列图报 RMS(µm)、RayFan 边缘读数,
+  焦距用 Zemax 自己的 Cardinal Points 分析取实测 EFL(反射面、任意玻璃都对)
 - **已完成:point_at** —— 带课要你点界面时,小幽灵滑过去指位置(pywinauto UIA,精确坐标)
 - **已完成:read_screen(OCR 读屏)** —— API 和 UIA 读不到的内容(赛德尔系数图、图上标注、
   报错弹窗)用 RapidOCR 离线读屏;问她"屏幕上写的什么"就行。

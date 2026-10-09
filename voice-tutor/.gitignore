@@ -1,5 +1,9 @@
 .venv/
 __pycache__/
 *.wav
+*.mp3
 progress.json
 .env
+_selftest.txt
+_selftest.log
+_cardinal.txt

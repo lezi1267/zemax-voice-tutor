@@ -109,7 +109,8 @@ SYSTEM = (
     "判定通过才调用 finish_lesson 记录进度(note 写一句话讲评)。"
     "每次下达新的操作步骤后调用 save_step 记断点(step 一句话复述该步),学生重启程序后能接着学;"
     "学生说'继续/接着上次的':调 read_lesson(课号填档案当前课),档案里'断点'还在就从那步的下一步直接带,不重念课件、不重复已给步骤。"
-    "EFFL 之类的数:read_analysis 返回里有 近轴EFL_mm,用实测值,不要自己估。"
+    "EFFL 之类的数:read_analysis 返回里有 EFL_mm(Zemax Cardinal Points 实测,带符号),"
+    "用实测值,不要自己估。"
     "API 读不到的屏幕内容(赛德尔系数图、图上标注、弹窗报错):调用 read_screen 读屏,读到的字直接用。"
     "带课时注意:学生系统的实际状态(孔径/像面位置)可能和课件前提不同,"
     "先用 read_lde 读实际值,按实际状态调整教学(比如课件说 EPD20 而实际是 10,就按 10 讲)。"
@@ -143,8 +144,8 @@ def _plain(text: str) -> str:
         text = pat.sub(rep, text)
     return text
 
-# 音色:Piper 中文就两个女声,samples\ 里各有一条试听,选好改这里
-VOICE = "zh_CN-xiao_ya-medium"
+# 音色:Piper 中文就两个女声,samples\ 里各有一条试听,选好改 .env 里的 PIPER_VOICE
+VOICE = os.getenv("PIPER_VOICE", "zh_CN-xiao_ya-medium")
 
 # 语速:.env 里 VOICE_SPEED 调,length_scale 越大越慢(0.85 快 / 1.0 正常 / 1.2 慢)
 import dataclasses
@@ -425,9 +426,11 @@ def _kill_stale_bots():
     import subprocess
 
     me, parent = os.getpid(), os.getppid()
+    # 只杀"这个目录里的 bot.py":匹配 '*bot.py*' 会顺手干掉别人项目里的同名脚本
+    here = str(Path(__file__).resolve())
     ps = (
         f"Get-CimInstance Win32_Process -Filter \"Name='python.exe' or Name='python3.13.exe'\" | "
-        f"Where-Object {{$_.CommandLine -like '*bot.py*' -and $_.ProcessId -ne {me} "
+        f"Where-Object {{$_.CommandLine -like '*{here}*' -and $_.ProcessId -ne {me} "
         f"-and $_.ProcessId -ne {parent}}} | "
         f"ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force; 'killed ' + $_.ProcessId }}"
     )
