@@ -7,7 +7,7 @@
 
 - **ZOS-API**:Zemax 官方的编程接口,.NET 封装。Python 通过 ZOSPy 库调用,**能做 GUI 里能做的一切,还能批量做**
 - **两种模式**:交互扩展(接你正开着的 GUI,实时可见)/ standalone(隐形实例,跑批处理)。日常上课用前者
-- **你已经用了一整个课程**:每次问我"RMS 多少",我调的就是这套 API——read_lde、read_analysis、point_at 三个工具全靠它
+- **你已经用了一整个课程**:每次问我"RMS 多少""焦距多少""屏幕上写的什么",我调的就是这套 API——read_lde、read_analysis、point_at、read_screen 这些工具全靠它
 - 这课的目标:**从"会用我封装好的"变成"会自己写"**
 
 ## 二、动手(25 分钟)
@@ -37,6 +37,9 @@ for r in [90, 95, 100, 105, 110]:
 ```
 
 3. 把结果画成折线图(matplotlib),找 RMS 最小的半径——**这就是第 3 课优化干的事,你手工复现了一遍**
+
+> 要顺手把焦距也读出来:用 `AnalysisIDM.CardinalPoints` 分析(写法参考 `zemax_tools._cardinal_part`)。
+> 别自己写近轴追迹算焦距——反射面和玻璃库里的牌号会把你自己算的那版算错。
 
 ## 三、实验(10 分钟)
 

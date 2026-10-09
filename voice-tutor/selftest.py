@@ -47,34 +47,43 @@ async def main():
     bad = [ch for ch in clean if ch in "*#`" or ord(ch) >= 0x1F000]
     report("TTS 文本清洗(emoji/markdown/数学符号)", not bad and "微米" in clean and "约等于" in clean, clean[:40])
 
-    # 1b) Cardinal Points 文本解析(不依赖 Zemax:拿 Zemax 输出格式的合成样本)
+    # 1b) Cardinal Points 文本解析(不依赖 Zemax:中英文两版样本 + 报错版)
     sample = ("Cardinal Points\n\nStarting Surface:  1\nEnding Surface:  4\nWavelength:  1\n"
               "Orientation:  Y-Z\nLens units:  mm\n\n"
               "                  Object Space   Image Space\n"
               "Focal Length:     -108.031       108.031\n"
               "Principal Planes: -108.031       108.031\n")
+    zh = ("基点数据概要\n\n                                \t物空间           \t像空间\n"
+          "焦长                  :\t        -192.855704\t         192.855704\n"
+          "主平面                :\t           0.000000\t          -2.634140\n")
     efl = zemax_tools._parse_cardinal(sample).get("EFL_mm")
     neg = zemax_tools._parse_cardinal("Focal Length:     50.000       -50.000\n").get("EFL_mm")
+    zh_efl = zemax_tools._parse_cardinal(zh).get("EFL_mm")
     none = zemax_tools._parse_cardinal("Cardinal Points\nFocal Lengths:\n")
-    report("Cardinal Points 解析(取像方焦距/负系统/无数据)",
-           efl == 108.031 and neg == -50.0 and "EFL_error" in none,
-           f"EFL={efl} 负系统={neg} 无数据={'EFL_error' in none}")
+    err = zemax_tools._parse_cardinal("基点数据概要\n\n基点计算错误。\n")
+    report("Cardinal Points 解析(中英/负系统/无数据/基点计算错误)",
+           efl == 108.031 and neg == -50.0 and zh_efl == 192.855704
+           and "EFL_error" in none and "没有光焦度" in err.get("EFL_error", ""),
+           f"EN={efl} 中={zh_efl} 负={neg}")
 
     # 1c) 分析文本解析(合成样本,不依赖 Zemax)
     vals = zemax_tools._parse_values(
         "RMS Radius: 0.0123\n没有冒号的行\nRMS光斑半径: 0.5\nRMS Radius: 不是数\n",
         ["RMS Radius", "RMS光斑半径"])
-    ray = zemax_tools._parse_rayfan(
-        "Ray Fan\n\nTable series: 子午,视场号= 1\n   1.0000000     0.0000000\n"
-        "   0.5000000    -0.0100000\n  -1.0000000     0.0200000\n\n"
-        "Table series: 弧矢,视场号 =2\n   1.0000000     0.0300000\n  -1.0000000    -0.0400000\n")
-    report("分析文本解析(RMS + RayFan 上下缘 + 视场号写法)",
+    zh_ray = ("光扇图数据列表\n\n子午数据是y像差作为Py的函数。\n\n"
+              "子午光扇，视场号1 = 0.0000 (度)\n\n  光瞳    \t     0.550000\n"
+              " -1.000  \t    -0.000000\n  1.000  \t     0.020000\n\n"
+              "弧矢光扇，视场号2 = 5.0000 (度)\n -1.000  \t    -0.040000\n  1.000  \t     0.030000\n")
+    en_ray = ("Table series: Tangential, Field #1\n   1.0000000     0.0000000\n"
+              "   0.5000000    -0.0100000\n  -1.0000000     0.0200000\n")
+    rz = zemax_tools._parse_rayfan(zh_ray)
+    re_ = zemax_tools._parse_rayfan(en_ray)
+    report("分析文本解析(RMS + RayFan 中英文标题 + 上下缘)",
            vals.get("RMS Radius") == 0.0123 and vals.get("RMS光斑半径") == 0.5
-           and ray.get("RayFan_子午_视场1_上缘") == 0.0
-           and ray.get("RayFan_子午_视场1_下缘") == 0.02
-           and ray.get("RayFan_弧矢_视场2_上缘") == 0.03
-           and ray.get("RayFan_弧矢_视场2_下缘") == -0.04,
-           f"{vals} {ray}")
+           and rz.get("RayFan_子午_视场1_上缘") == 0.02 and rz.get("RayFan_子午_视场1_下缘") == -0.0
+           and rz.get("RayFan_弧矢_视场2_上缘") == 0.03 and rz.get("RayFan_弧矢_视场2_下缘") == -0.04
+           and re_.get("RayFan_子午_视场1_上缘") == 0.0 and re_.get("RayFan_子午_视场1_下缘") == 0.02,
+           f"{vals} 中={rz} 英={re_}")
 
     # 2) 课程工具 + 学习档案
     def mk_params(args=None):
@@ -168,8 +177,11 @@ async def main():
             elif name == "read_analysis":
                 rms = r.get("RMS光斑半径_um")
                 efl = r.get("EFL_mm")
-                report(name, rms is not None and efl is not None,
-                       f"RMS={rms} EFL={efl}" if rms else str(r)[:60])
+                # 系统没光焦度时 Zemax 自己报"基点计算错误",工具如实返回 EFL_error —— 这也算工具正常
+                ok = rms is not None and (efl is not None or "EFL_error" in r)
+                report(name, ok,
+                       f"RMS={rms} EFL={efl if efl is not None else r.get('EFL_error')}"
+                       if rms is not None else str(r)[:120])
             else:
                 report(name, r.get("ok") is True, f"指向={r.get('指向')}" if r.get("ok") else str(r)[:60])
     else:

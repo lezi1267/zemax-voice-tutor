@@ -12,6 +12,7 @@ import re
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from loguru import logger
@@ -29,18 +30,34 @@ _conn = None  # (oss, zos),启动时建立并长驻;出错/超时清空,下次�
 _zemax_lock = threading.Lock()
 
 
-def _enabled():
-    return os.getenv("ZEMAX_ENABLED", "1") == "1"
+@contextmanager
+def _zemax_busy_timeout(seconds: float = 15):
+    """拿不到锁 = 上一个读数卡死了(asyncio 超时杀不掉 worker 线程,锁还它拿着)。
+    等它一会儿,超时就如实报错,别把语音管线一起拖死。"""
+    if not _zemax_lock.acquire(timeout=seconds):
+        raise TimeoutError("上一个 Zemax 读数还卡着:重开一次 编程→交互扩展 再问")
+    try:
+        yield
+    finally:
+        _zemax_lock.release()
 
 
 def _rearm_extension() -> bool:
-    """交互扩展断开后自动重开:在 Zemax 主窗口点 编程→交互扩展。
-    实测 invoke 后约 3 秒可重连;找不到入口(比如 Zemax 没开)返回 False。"""
+    """交互扩展断开后自动重开:在 Zemax 功能区点 编程 → 交互扩展。
+    实测:「交互扩展」按钮只有在 编程 选项卡被选中后才出现在 UIA 树里 —— 所以先选卡再找按钮。
+    invoke 后约 3 秒可重连;找不到入口(比如 Zemax 没开)返回 False。"""
     try:
         from pywinauto import Desktop
 
         win = Desktop(backend="uia").window(title_re=".*OpticStudio.*")
         win.set_focus()
+        for c in win.descendants():
+            try:
+                if c.element_info.control_type == "TabItem" and (c.window_text() or "").strip() == "编程":
+                    c.select()
+                    break
+            except Exception:
+                pass
         for c in win.descendants():
             try:
                 if (c.window_text() or "").strip() == "交互扩展":
@@ -81,7 +98,7 @@ def _disconnect_now():
 
 
 def _connect_locked():
-    with _zemax_lock:
+    with _zemax_busy_timeout():
         return _connect_sync()
 
 
@@ -143,7 +160,7 @@ def _lde_snapshot(oss):
 
 def _read_lde_sync():
     """阻塞连接+读数,只准在 asyncio.to_thread 的 worker 线程里跑。"""
-    with _zemax_lock:
+    with _zemax_busy_timeout():
         return _lde_snapshot(_connect_sync())
 
 
@@ -188,78 +205,103 @@ def _parse_values(text: str, labels: list[str]) -> dict:
 
 
 def _parse_rayfan(text: str) -> dict:
-    """RayFan 文本 → 每个系列在光瞳 ±1 处的像差(µm),这就是'边缘光线读数'。"""
+    """RayFan 文本 → 每个系列在光瞳 ±1 处的像差(µm),这就是'边缘光线读数'。
+
+    系列标题两种语言都认(文本语言跟着 OpticStudio 界面语言走):
+    'Table series: Tangential, Field #1' / '子午光扇，视场号1 = 0.0000 (度)'"""
     out = {}
-    series = None
+    key_head = None
     for line in text.splitlines():
-        if "Table series" in line:
-            series = line.split(":", 1)[-1].strip()
-            tag = ("子午" if "子午" in series else "弧矢" if "弧矢" in series else series[:6])
-            # 视场号写法不固定:"视场号= 1" / "视场号 =1" / "视场号 1" 都得认
-            m = re.search(r"视场号\s*=?\s*(\d+)", series)
-            field = f"视场{m.group(1)}" if m else "视场?"
-            key_head = f"RayFan_{tag}_{field}"
+        s = line.strip()
+        if re.search(r"Table series|视场号|Field\s*#", s) and re.search(r"子午|弧矢|Tangential|Sagittal", s):
+            tag = ("弧矢" if ("弧矢" in s or "Sagittal" in s)
+                   else "子午" if ("子午" in s or "Tangential" in s) else s[:6])
+            m = re.search(r"(?:视场号|Field\s*#?)\s*=?\s*(\d+)", s)
+            key_head = f"RayFan_{tag}_{f'视场{m.group(1)}' if m else '视场?'}"
             continue
-        if series is None:
+        if key_head is None:
             continue
-        parts = line.split()
+        parts = s.split()
         if len(parts) == 2:
             try:
                 py, ab = float(parts[0]), float(parts[1])
             except ValueError:
                 continue
             if abs(abs(py) - 1.0) < 1e-6:
-                key = key_head + ("_下缘" if py < 0 else "_上缘")
-                out[key] = ab
+                out[key_head + ("_下缘" if py < 0 else "_上缘")] = ab
     return out
+
+
+def _txt_encoding() -> str:
+    """OpticStudio 自己说它写文本文件用什么编码(偏好 Unicode=UTF-16LE,ANSI=本地码页)。
+    猜错就是乱码,解析全部失效 —— 所以问它本人,别猜。"""
+    try:
+        pref = str(_conn[1].Application.Preferences.General.TXTFileEncoding)
+        if "Unicode" in pref:
+            return "utf-16-le"
+        if "ANSI" in pref:
+            import locale
+
+            return locale.getpreferredencoding(False)
+    except Exception:
+        pass
+    return "utf-8"
+
+
+def _analysis_text(oss, analysis_id) -> str:
+    """跑一个分析 → 它的文本输出。临时文件读完就删。
+
+    取文本必须用 GetResults().GetTextFile:实测 IA_.ToFile 对 Cardinal Points 这类报告
+    只写出 "0 message(s) in output" 的空壳。"""
+    import tempfile
+
+    a = oss.Analyses.New_Analysis(analysis_id)
+    fd, tmp = tempfile.mkstemp(suffix=".txt")
+    os.close(fd)
+    try:
+        a.ApplyAndWaitForCompletion()
+        a.GetResults().GetTextFile(tmp)
+        raw = Path(tmp).read_bytes()
+        if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+            return raw.decode("utf-16", errors="replace")
+        return raw.decode(_txt_encoding(), errors="replace").lstrip("\ufeff")
+    finally:
+        try:
+            a.Close()
+        except Exception:
+            pass
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
 
 
 def _spot_part(oss):
     """StandardSpot 分析 → RMS 光斑半径(µm)。"""
-    import tempfile
-
-    a = oss.Analyses.New_Analysis(zp.constants.Analysis.AnalysisIDM.StandardSpot)
-    try:
-        a.ApplyAndWaitForCompletion()
-        tmp = tempfile.mktemp(suffix=".txt")
-        a.ToFile(tmp)
-        vals = _parse_values(open(tmp, encoding="utf-8", errors="replace").read(),
-                             ["RMS光斑半径", "RMS Radius"])
-        return {"RMS光斑半径_um": vals.get("RMS光斑半径", vals.get("RMS Radius"))}
-    finally:
-        try:
-            a.Close()
-        except Exception:
-            pass
+    vals = _parse_values(_analysis_text(oss, zp.constants.Analysis.AnalysisIDM.StandardSpot),
+                         ["RMS光斑半径", "RMS Radius"])
+    return {"RMS光斑半径_um": vals.get("RMS光斑半径", vals.get("RMS Radius"))}
 
 
 def _rayfan_part(oss):
     """RayFan 分析 → 光瞳 ±1 处的横向像差(µm),即'边缘光线读数'。"""
-    import tempfile
-
-    a = oss.Analyses.New_Analysis(zp.constants.Analysis.AnalysisIDM.RayFan)
-    try:
-        a.ApplyAndWaitForCompletion()
-        tmp = tempfile.mktemp(suffix=".txt")
-        a.ToFile(tmp)
-        return _parse_rayfan(open(tmp, encoding="utf-8", errors="replace").read())
-    finally:
-        try:
-            a.Close()
-        except Exception:
-            pass
+    return _parse_rayfan(_analysis_text(oss, zp.constants.Analysis.AnalysisIDM.RayFan))
 
 
 def _parse_cardinal(text: str) -> dict:
-    """Cardinal Points 文本 → EFL_mm。数据行形如 'Focal Length:  -108.031  108.031'(物方 像方),取像方。"""
+    """Cardinal Points 文本 → EFL_mm。数据行形如(语言跟着 OpticStudio 界面走):
+    'Focal Length:  -108.031  108.031' / '焦长 :  -192.855704  192.855704' —— 物方 像方,取像方。"""
+    if "基点计算错误" in text or "Cardinal point calculation error" in text:
+        return {"EFL_error": "Zemax 报“基点计算错误”:当前系统没有光焦度,焦距是无穷大"}
     for line in text.splitlines():
-        if line.lstrip("\ufeff ").startswith("Focal Length"):
+        s = line.lstrip("\ufeff ")
+        if s.startswith("Focal Length") or s.startswith("焦长"):
             nums = re.findall(r"-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?", line.split(":", 1)[-1])
             if len(nums) >= 2:
                 return {"EFL_mm": float(nums[1])}
             if nums:
                 return {"EFL_mm": float(nums[0])}
-    return {"EFL_error": "Cardinal Points 输出里没找到 Focal Length 行,分析可能没跑成"}
+    return {"EFL_error": "Cardinal Points 输出里没找到焦距行,分析可能没跑成"}
 
 
 def _cardinal_part(oss):
@@ -267,25 +309,12 @@ def _cardinal_part(oss):
 
     让 Zemax 自己算:反射面、任意玻璃、负焦距系统都对。
     这里以前是手工近轴追迹 + 硬编码 5 种玻璃的折射率,遇到反射面和别的玻璃会静默算错。"""
-    import tempfile
-
-    a = oss.Analyses.New_Analysis(zp.constants.Analysis.AnalysisIDM.CardinalPoints)
-    try:
-        a.ApplyAndWaitForCompletion()
-        tmp = tempfile.mktemp(suffix=".txt")
-        a.ToFile(tmp)
-        text = open(tmp, encoding="utf-8", errors="replace").read()
-    finally:
-        try:
-            a.Close()
-        except Exception:
-            pass
-    return _parse_cardinal(text)
+    return _parse_cardinal(_analysis_text(oss, zp.constants.Analysis.AnalysisIDM.CardinalPoints))
 
 
 def _read_analysis_sync():
     """点列图 RMS + RayFan 边缘 + Cardinal Points 焦距 + LDE 结构快照,一次全给。阻塞,worker 线程专用。"""
-    with _zemax_lock:
+    with _zemax_busy_timeout():
         oss = _connect_sync()
         import dialog_fix
 
