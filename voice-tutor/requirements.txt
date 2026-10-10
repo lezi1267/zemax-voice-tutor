@@ -1,7 +1,6 @@
 pipecat-ai[funasr]==1.12.0
 funasr==1.4.16
 torch==2.14.1
-torchaudio==2.11.0
 piper-tts[zh]==1.8.0
 onnxruntime==1.24.4
 PyAudio==0.2.14

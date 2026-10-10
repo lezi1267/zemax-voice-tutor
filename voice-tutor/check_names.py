@@ -13,7 +13,8 @@ SKIP = {Path(__file__).name, "selftest.py"}  # selftest 自己不需要体检
 
 missing = []
 for f in sorted(HERE.glob("*.py")):
-    if f.name in SKIP:
+    # 下划线开头的是临时探针:import 它们会把副作用(连 Zemax、写文件)真跑一遍
+    if f.name in SKIP or f.name.startswith("_"):
         continue
     try:
         mod = importlib.import_module(f.stem)

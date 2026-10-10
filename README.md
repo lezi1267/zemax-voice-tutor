@@ -41,7 +41,7 @@ copy .env.example .env      :: 填 GLM_API_KEY(open.bigmodel.cn 注册,免费档
 
 | 路径 | 是什么 |
 |---|---|
-| [voice-tutor/](voice-tutor/) | 主程序:语音管线 + 7 个 Zemax/课程工具 |
+| [voice-tutor/](voice-tutor/) | 主程序:语音管线 + 9 个 Zemax/课程工具 |
 | [学习路线.md](学习路线.md) | 10 课总纲 |
 | 第1课…第10课_*.md | 课件(bot 直接读这些文件带课) |
 | [zemax_api.py](zemax_api.py) | ZOS-API 连接入口(extension / standalone) |
@@ -69,7 +69,7 @@ STT/TTS 都在本地或你自己的云端账号上跑;LLM 和 minimax TTS 需要
 
 - 本地外放没有回声消除:建议戴耳机,否则它会被自己的声音打断。
 - OCR 只认字,不识图形几何(点列图形状它"看不懂")。
-- 交互扩展一次只认一个连接:bot 读完会立刻让位,但同一时刻别再开第二个 API 客户端。
+- 交互扩展一次只认一个连接:bot 启动就连上并长驻(退出时才断开),所以同一时刻别再开第二个 API 客户端。
 
 ## License
 

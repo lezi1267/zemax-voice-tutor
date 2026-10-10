@@ -51,10 +51,8 @@ from pipecat.frames.frames import (
     ErrorFrame,
     Frame,
     InterimTranscriptionFrame,
-    LLMFullResponseEndFrame,
     LLMRunFrame,
     StartFrame,
-    TextFrame,
     TranscriptionFrame,
 )
 from loguru import logger
@@ -88,7 +86,7 @@ import chat_window
 import lessons
 import zemax_tools
 from lessons import read_lesson_schema, finish_lesson_schema, save_step_schema
-from zemax_tools import point_at_schema, read_analysis_schema, read_lde_schema, read_screen_schema
+from zemax_tools import point_at_schema, read_analysis_schema, read_color_schema, read_lde_schema, read_mtf_schema, read_screen_schema
 
 load_dotenv(override=True)
 
@@ -104,6 +102,9 @@ SYSTEM = (
     "要操作步骤:一次只给一个操作指令。"
     "问原理:直接说重点,两句话以内,可以打一个比方。"
     "问成像质量、RMS、焦距:先调用 read_analysis 读真实数值再回答。"
+    "问 MTF、分辨率、能分辨多少线对:调用 read_mtf 拿实测值,MTF 数值没有单位就是 0~1 的模值。"
+    "问色差、消色差、玻璃配对(第4课):调用 read_color 拿轴向色差_mm 和倍率色差_um;只有一个波长时色差必然是 0,先让学生加波长。"
+    "课件要设视场/波长或把某个面设为变量:read_lde 返回里有 视场、波长、半径是变量、厚度是变量,用它核对。"
     "带课要学生点界面元素时:调用 point_at 指给他看,再告诉他下一步。"
     "学生报验收数字:用 read_analysis/read_lde 实测对比,当场判定过/不过、差在哪;"
     "判定通过才调用 finish_lesson 记录进度(note 写一句话讲评)。"
@@ -190,7 +191,9 @@ class EdgeTTSService(TTSService):
             **kwargs,
         )
         self._edge_voice = voice
-        self._edge_speed = speed  # 1.0 正常,0.7 快 43% → 换算成微软的 rate 百分比
+        # VOICE_SPEED 是 piper 的 length_scale(越大越慢)。微软那边是百分比 rate:
+        # 0.7 → +30%(快),1.2 → -20%(慢)。不换算就是设了没效果。
+        self._edge_rate = f"{round((1.0 - speed) * 100):+d}%"
 
     async def _edge_pcm_stream(self, text: str) -> AsyncGenerator[bytes, None]:
         """从微软接口流式取 mp3,后台线程边收边解码,逐块吐 24k s16 PCM。"""
@@ -245,7 +248,7 @@ class EdgeTTSService(TTSService):
         threading.Thread(target=decode, daemon=True).start()
 
         try:
-            comm = edge_tts.Communicate(text, self._edge_voice)
+            comm = edge_tts.Communicate(text, self._edge_voice, rate=self._edge_rate)
             async for chunk in comm.stream():
                 if chunk["type"] == "audio":
                     mp3_q.put(chunk["data"])
@@ -415,7 +418,7 @@ async def run_bot(transport) -> None:
         ),
     )
 
-    context = LLMContext(tools=[read_lesson_schema, read_lde_schema, read_analysis_schema, point_at_schema, finish_lesson_schema, save_step_schema, read_screen_schema])
+    context = LLMContext(tools=[read_lesson_schema, read_lde_schema, read_analysis_schema, read_mtf_schema, read_color_schema, point_at_schema, finish_lesson_schema, save_step_schema, read_screen_schema])
     user_agg, assistant_agg = LLMContextAggregatorPair(
         context,
         user_params=LLMUserAggregatorParams(

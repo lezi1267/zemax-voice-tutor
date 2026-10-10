@@ -103,17 +103,23 @@ async def _finish_lesson_handler(params) -> None:
     except (TypeError, ValueError):
         n = 0
     note = str(args.get("note", "")).strip()
+    if not n:
+        # 课号没填/填 0 就别动档案:以前这里会把学生的断点悄悄清掉
+        await params.result_callback({"error": "课号无效,没记进度"})
+        return
 
     prog = load_progress()
-    if n and n not in prog.get("done", []):
+    if n not in prog.get("done", []):
         prog.setdefault("done", []).append(n)
-    if n:
-        prog["current"] = n  # 记录推进到哪课
+    # 只前进不后退:重过第 2 课不该把"推进到第 3 课"改回 2(档案里 current=2 而 done=[2,3] 就是这么来的)
+    prog["current"] = max(int(prog.get("current") or 0), n)
     prog.pop("checkpoint", None)  # 过课清断点,下次从新一课开头教
     entry = {"time": time.strftime("%Y-%m-%d %H:%M"), "lesson": n, "note": note[:120]}
     log = prog.setdefault("log", [])
-    if not (log and log[-1].get("lesson") == n and log[-1].get("note") == entry["note"]):
-        log.append(entry)  # GLM 常连环调用同一验收,相邻重复只记一条
+    # 同课同 note 只要已记过就不再追加(不限相邻):GLM 带课时学生反复说"好了"会连环 finish,
+    # 只查相邻一条时,中间隔了别课的记录就会重复记满一屏(实测同一 note 连写 12 条)。
+    if not any(e.get("lesson") == n and e.get("note") == entry["note"] for e in log):
+        log.append(entry)
     save_progress(prog)
 
     has_next = any(BASE.glob(f"*第{n + 1}课*.md"))

@@ -114,10 +114,7 @@ async def warm_connect(timeout: float = 25):
 
 
 def _lde_snapshot(oss):
-    """读 LDE 全部面参数 + 孔径,返回 dict。阻塞,worker 线程专用。"""
-    import dialog_fix
-
-    dialog_fix.fix()  # 每次读数前驯一次:学生重开小窗会重新锁人
+    """读 LDE 全部面参数 + 孔径,返回 dict。阻塞,worker 线程专用。驯窗由 _connect_sync 负责。"""
     lde = oss.LDE
     rows = []
     for i in range(lde.NumberOfSurfaces):
@@ -140,12 +137,22 @@ def _lde_snapshot(oss):
         except Exception:
             stype = "?"
 
+        def is_var(cell):
+            # 实测:IEditorCell.Solve 读回来就是 "Variable"/"Fixed"。
+            # 别用 Value == "-" 判 —— 固定格的 Value 也可能是 "-",变量格也可能是数字,两头都错
+            try:
+                return str(getattr(s, cell).Solve).strip() == "Variable"
+            except Exception:
+                return None
+
         rows.append({
             "面序号": i,
             "类型": stype,
             "注释": get("Comment"),
             "半径": get("Radius"),
+            "半径是变量": is_var("RadiusCell"),
             "厚度": get("Thickness"),
+            "厚度是变量": is_var("ThicknessCell"),
             "材料": get("Material"),
             "半口径": get("SemiDiameter"),
         })
@@ -155,6 +162,19 @@ def _lde_snapshot(oss):
         "面参数": rows,
         "系统孔径": {"类型": str(ap.ApertureType), "值": ap.ApertureValue},
     }
+    # 视场/波长:第1课要设对,MTF 按视场报。读不到就整段不给,不编
+    try:
+        flds = oss.SystemData.Fields
+        result["视场"] = [{"视场号": n, "X": flds.GetField(n).X, "Y": flds.GetField(n).Y,
+                           "权重": flds.GetField(n).Weight} for n in range(1, flds.NumberOfFields + 1)]
+    except Exception:
+        pass
+    try:
+        wls = oss.SystemData.Wavelengths
+        result["波长"] = [{"波长_um": wls.GetWavelength(n).Wavelength,
+                           "权重": wls.GetWavelength(n).Weight} for n in range(1, wls.NumberOfWavelengths + 1)]
+    except Exception:
+        pass
     return result
 
 
@@ -198,9 +218,12 @@ def _parse_values(text: str, labels: list[str]) -> dict:
                 tail = line.replace("：", ":").split(":")[-1].strip()
                 num = tail.split()[0] if tail else ""
                 try:
-                    out[label] = float(num)
+                    num = float(num)
                 except ValueError:
-                    pass
+                    continue
+                # 多视场分析每个视场一行:取最差的那个,别默默只留最后一行
+                if label not in out or num > out[label]:
+                    out[label] = num
     return out
 
 
@@ -279,8 +302,8 @@ def _analysis_text(oss, analysis_id) -> str:
 def _spot_part(oss):
     """StandardSpot 分析 → RMS 光斑半径(µm)。"""
     vals = _parse_values(_analysis_text(oss, zp.constants.Analysis.AnalysisIDM.StandardSpot),
-                         ["RMS光斑半径", "RMS Radius"])
-    return {"RMS光斑半径_um": vals.get("RMS光斑半径", vals.get("RMS Radius"))}
+                         ["RMS光斑半径", "RMS Spot Radius", "RMS Radius"])
+    return {"RMS光斑半径_um": vals.get("RMS光斑半径", vals.get("RMS Spot Radius", vals.get("RMS Radius")))}
 
 
 def _rayfan_part(oss):
@@ -315,14 +338,18 @@ def _cardinal_part(oss):
 def _read_analysis_sync():
     """点列图 RMS + RayFan 边缘 + Cardinal Points 焦距 + LDE 结构快照,一次全给。阻塞,worker 线程专用。"""
     with _zemax_busy_timeout():
-        oss = _connect_sync()
-        import dialog_fix
-
-        dialog_fix.fix()
-        out = _spot_part(oss)
-        out.update(_rayfan_part(oss))
-        out.update(_cardinal_part(oss))
+        oss = _connect_sync()  # 里面已经驯过一次窗
+        # 一个分析跑挂不该把整份读数一起带走(问焦距时点列图数据仍要能用)
+        out = {}
+        for name, part in (("点列图", _spot_part), ("光扇图", _rayfan_part), ("基点", _cardinal_part)):
+            try:
+                out.update(part(oss))
+            except Exception as e:
+                out[name + "读取失败"] = str(e)[:120]
         out["当前结构"] = _lde_snapshot(oss)
+        # 空系统/没光焦度时点列图 RMS 会是 0.0 —— 看着像"完美",其实是根本没成像
+        if out.get("EFL_error") and out.get("RMS光斑半径_um") == 0:
+            out["提醒"] = "焦距算不出来 + RMS=0:这不是像质好,是系统里没有有效镜头,先看镜头数据"
         return out
 
 _last_analysis = (0.0, None)  # (时间, 结果),15 秒内复用,防 GLM 连呼刷屏
@@ -331,7 +358,6 @@ _last_analysis = (0.0, None)  # (时间, 结果),15 秒内复用,防 GLM 连呼�
 async def _read_analysis_handler(params) -> None:
     global _conn, _last_analysis
     import chat_window
-    import time
 
     if _last_analysis[1] is not None and time.time() - _last_analysis[0] < 15:
         r = dict(_last_analysis[1])
@@ -356,7 +382,7 @@ read_analysis_schema = FunctionSchema(
     name="read_analysis",
     description=(
         "读取学生当前 Zemax 的分析数据:点列图 RMS 光斑半径(单位 µm)、RayFan 边缘光线读数、"
-        "有效焦距 EFL_mm(单位 mm,Zemax Cardinal Points 实测,带符号)。"
+        "有效焦距 EFL_mm(单位 mm,Zemax Cardinal Points 实测,带符号);多视场时 RMS 取最差视场。"
         "学生问'图怎么样''RMS 多少''焦距多少''成像好不好'时调用,拿真实数值回答。"
     ),
     properties={},
@@ -365,11 +391,217 @@ read_analysis_schema = FunctionSchema(
 )
 
 
+def _parse_mtf(text: str) -> dict:
+    """FftMtf 文本 → 每个视场的 MTF。文本块(语言跟着 OpticStudio 界面走):
+    '视场：0.00, 0.00 (度)' / 'Field: 0.00, 0.00 (deg)',后跟 '空间频率 子午 弧矢' 数据行。
+    取最接近 30 和 50 线对/mm 的那一档(采样格不一定正好有 30)。"""
+    out = {}
+    if "取样太低" in text or "Sampling too low" in text:
+        out["MTF警告"] = "Zemax 提示取样太低、数据不准:让学生提高采样(或先别拿这个数下结论)"
+    blocks = {}
+    key = None
+    for line in text.splitlines():
+        s = line.strip()
+        m = re.search(r"(?:视场|Field)\s*[:：]\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)", s)
+        if m:
+            key = f"{m.group(1)},{m.group(2)}"
+            blocks[key] = []
+            continue
+        if not key:
+            continue
+        p = s.split()
+        if len(p) == 3:
+            try:
+                blocks[key].append((float(p[0]), float(p[1]), float(p[2])))
+            except ValueError:
+                pass
+    if not any(blocks.values()):
+        out["MTF说明"] = "MTF 分析没给出数据行:先让学生对焦(Quick Focus)或提高采样,再跑一次"
+    for key, rows in blocks.items():
+        if not rows:
+            continue
+        for target in (30, 50):
+            f, tan, sag = min(rows, key=lambda r: abs(r[0] - target))
+            out[f"MTF@{f:.0f}lp_mm_子午_视场{key}"] = round(tan, 3)
+            out[f"MTF@{f:.0f}lp_mm_弧矢_视场{key}"] = round(sag, 3)
+        cut = next((r[0] for r in rows if r[0] > 0 and r[1] < 0.05), None)
+        if cut is not None:
+            out[f"MTF截止频率_lp_mm_视场{key}"] = cut
+    return out
+
+
+def _mtf_part(oss):
+    """FftMtf(复色光衍射 MTF)分析 → 每视场 MTF + 截止频率。"""
+    return _parse_mtf(_analysis_text(oss, zp.constants.Analysis.AnalysisIDM.FftMtf))
+
+
+def _parse_longitudinal(text: str) -> dict:
+    """轴向像差(LongitudinalAberration)→ 轴向色差。文本(语言跟着界面走):
+    'Rel. 光瞳  0.5500  0.4861  0.6563' 表头是波长,数据行 '光瞳比 值 值 值',单位 mm。
+    取光瞳比 0 那一行(近轴):各波长焦点位置的最大差就是轴向色差。"""
+    wl = None
+    rows = []
+    for line in text.splitlines():
+        p = line.split()
+        if not p:
+            continue
+        if p[0].startswith("Rel."):
+            cand = []
+            for x in p[1:]:
+                try:
+                    cand.append(float(x))
+                except ValueError:
+                    pass  # 'Rel. 光瞳' 里的中文表头
+            wl = cand or None
+            continue
+        if not wl or len(p) != len(wl) + 1:
+            continue
+        try:
+            rows.append((float(p[0]), [float(v) for v in p[1:]]))
+        except ValueError:
+            pass
+    if not rows:
+        return {}
+    axis = rows[0][1]
+    return {"轴向色差_mm": round(max(axis) - min(axis), 4),
+            "各波长焦点_mm": {f"{w:.4f}": v for w, v in zip(wl, axis)}}
+
+
+def _parse_lateral_color(text: str) -> dict:
+    """垂轴色差(LateralColor)→ 全视场最大倍率色差,单位 µm。数据行就两列:视场比 + 色差。"""
+    vals = []
+    for line in text.splitlines():
+        p = line.split()
+        if len(p) != 2:
+            continue
+        try:
+            f, v = float(p[0]), float(p[1])
+        except ValueError:
+            continue
+        if 0 <= f <= 1.5:
+            vals.append(abs(v))
+    return {"倍率色差_um": round(max(vals), 4)} if vals else {}
+
+
+def _read_color_sync():
+    """轴向色差 + 倍率色差(第 4 课消色差的核心验收数字)。阻塞,worker 线程专用。"""
+    with _zemax_busy_timeout():
+        oss = _connect_sync()
+        out = {}
+        for name, part in (("轴向像差", lambda: _parse_longitudinal(
+                _analysis_text(oss, zp.constants.Analysis.AnalysisIDM.LongitudinalAberration))),
+            ("垂轴色差", lambda: _parse_lateral_color(
+                _analysis_text(oss, zp.constants.Analysis.AnalysisIDM.LateralColor)))):
+            try:
+                out.update(part())
+            except Exception as e:
+                out[name + "读取失败"] = str(e)[:120]
+        try:
+            n = oss.SystemData.Wavelengths.NumberOfWavelengths
+        except Exception:
+            n = 0
+        if n and n < 2:
+            out["波长不够"] = (f"系统里只有 {n} 个波长,色差根本测不出来(现在测到的 0 不算数):"
+                              "至少加两个,比如 0.4861 和 0.6563")
+        try:
+            flds = oss.SystemData.Fields
+            on_axis_only = all(abs(flds.GetField(i).X) < 1e-9 and abs(flds.GetField(i).Y) < 1e-9
+                               for i in range(1, flds.NumberOfFields + 1))
+        except Exception:
+            on_axis_only = False
+        if on_axis_only:
+            out["视场不够"] = "视场全是 0°,倍率色差必然是 0(不是消掉了):设一个离轴视场,比如 7°"
+        return out
+
+
+_last_color = (0.0, None)  # (时间, 结果),15 秒内复用,防 GLM 连呼刷屏
+
+
+async def _read_color_handler(params) -> None:
+    global _conn, _last_color
+    import chat_window
+
+    if _last_color[1] is not None and time.time() - _last_color[0] < 15:
+        r = dict(_last_color[1])
+        r["缓存"] = "这是15秒内的结果,直接用,别再调"
+        await params.result_callback(r)
+        return
+    chat_window.log("系统", "正在跑色差分析,几秒钟……")
+    try:
+        result = await asyncio.wait_for(asyncio.to_thread(_read_color_sync), timeout=30)
+    except asyncio.TimeoutError:
+        _conn = None
+        result = {"error": "读取超时:请检查 Zemax 的交互扩展小窗是否还开着,关掉重开一次再说。"}
+    except Exception as e:
+        _conn = None
+        result = {"error": str(e)}
+    if "error" not in result:
+        _last_color = (time.time(), result)
+    await params.result_callback(result)
+
+
+read_color_schema = FunctionSchema(
+    name="read_color",
+    description=(
+        "读取学生当前镜头的色差(第 4 课消色差双胶合的核心验收):轴向色差_mm(不同波长焦点位置差,越大色差越严重)"
+        "和倍率色差_um(全视场最大垂轴色差)。学生问'色差多少''消掉了吗''这对玻璃行不行'时调用。"
+        "只有一个波长时会提示先加波长,此时测到的 0 不是消掉了色差。"
+    ),
+    properties={},
+    required=[],
+    handler=_read_color_handler,
+)
+
+
+_last_mtf = (0.0, None)  # (时间, 结果),15 秒内复用,防 GLM 连呼刷屏
+
+
+def _read_mtf_sync():
+    with _zemax_busy_timeout():
+        return _mtf_part(_connect_sync())
+
+
+async def _read_mtf_handler(params) -> None:
+    global _conn, _last_mtf
+    import chat_window
+
+    if _last_mtf[1] is not None and time.time() - _last_mtf[0] < 15:
+        r = dict(_last_mtf[1])
+        r["缓存"] = "这是15秒内的结果,直接用,别再调"
+        await params.result_callback(r)
+        return
+    chat_window.log("系统", "正在跑 MTF 分析,几秒钟……")
+    try:
+        result = await asyncio.wait_for(asyncio.to_thread(_read_mtf_sync), timeout=30)
+    except asyncio.TimeoutError:
+        _conn = None
+        result = {"error": "读取超时:请检查 Zemax 的交互扩展小窗是否还开着,关掉重开一次再说。"}
+    except Exception as e:
+        _conn = None
+        result = {"error": str(e)}
+    if "error" not in result:
+        _last_mtf = (time.time(), result)
+    await params.result_callback(result)
+
+
+read_mtf_schema = FunctionSchema(
+    name="read_mtf",
+    description=(
+        "读取学生当前镜头的衍射 MTF(FftMtf 分析):每个视场在 30 和 50 线对/mm 的子午/弧矢 MTF 值,"
+        "以及 MTF 掉到 0.05 以下的截止频率(lp/mm)。学生问'MTF 多少''分辨率怎么样''能分辨多少线对'"
+        "(第 7 课)时调用,拿真实数值回答,别凭点列图猜。"
+    ),
+    properties={},
+    required=[],
+    handler=_read_mtf_handler,
+)
+
+
 read_lde_schema = FunctionSchema(
     name="read_lde",
     description=(
-        "读取学生当前 Zemax 的镜头数据编辑器(LDE):每个面的类型/半径/厚度/材料/半口径,"
-        "以及系统孔径。学生问'我填了什么''帮我检查参数''对不对',或讨论当前镜头结构时,"
+        "读取学生当前 Zemax 的镜头数据编辑器(LDE):每个面的类型/半径/厚度/材料/半口径、这一面的半径或"
+        "厚度是不是变量,以及系统孔径、视场表、波长表。学生问'我填了什么''帮我检查参数''对不对''设成变量了吗',或讨论当前镜头结构时,"
         "先调用它拿真实数据再回答,不要凭空猜。"
     ),
     properties={},
@@ -384,7 +616,6 @@ _last_point = ("", 0.0)  # (目标名, 时间),5 分钟内同一个目标不重�
 async def _point_at_handler(params) -> None:
     global _last_point
     import chat_window
-    import time
 
     name = str((params.arguments or {}).get("name", "")).strip()
     if not name:
@@ -423,6 +654,11 @@ async def _point_at_handler(params) -> None:
         best = await asyncio.wait_for(asyncio.to_thread(find), timeout=20)
     except asyncio.TimeoutError:
         best = None
+    except Exception as e:
+        # Zemax 没开时 pywinauto 抛 ElementNotFoundError。以前只接 TimeoutError,
+        # 这个异常会把整轮对话炸掉(自检在 Zemax 没开时跳过 point_at,所以一直没暴露)。
+        await params.result_callback({"error": "找不到 OpticStudio 窗口(" + type(e).__name__ + "):先打开 Zemax 再让我指路"})
+        return
     if not best:
         await params.result_callback({
             "error": f'在 Zemax 界面上没找到"{name}"。换个叫法(如 点列图/光线像差图/系统选项),或让学生自己找'

@@ -15,7 +15,7 @@ import subprocess
 import sys
 import threading
 
-RED, YELLOW, DARK = "#FF3B30", "#FFE100", "#600000"
+RED, DARK = "#FF3B30", "#600000"
 BODY, BODY_EDGE = "#CFE8FF", "#3A6EA5"
 
 
