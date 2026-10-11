@@ -23,7 +23,11 @@
 
 1. 复制 `.env.example` 为 `.env`,填 `GLM_API_KEY`([open.bigmodel.cn](https://open.bigmodel.cn) 注册后在"API Keys"里创建,`glm-4-flash` 免费档不用充值)
 2. 麦克风插好(笔记本自带即可),最好戴耳机
-3. 仓库不含 `.venv`(1.4 GB 依赖不上传)。先建:`python -m venv .venv`,再 `.venv\Scripts\pip install -r requirements.txt`
+3. 仓库不含 `.venv`(1.4 GB 依赖不上传)。先建:`python -m venv .venv`,再装依赖:
+   ```cmd
+   .venv\Scripts\pip install -r requirements.txt
+   :: 国内慢就换清华镜像:.venv\Scripts\pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+   ```
 4. 要读数/指路:你自己得有 **Zemax OpticStudio**(2023 R1 实测过),启动前点 **编程 → 交互扩展**。没有 Zemax 也能跑,只是只剩聊天 + 看屏幕
 5. 首次要下的东西:依赖 1.4 GB、SenseVoice 识别模型 896 MB、piper 音色 60 MB(用 piper 时再加 g2pW 拼音模型 152 MB)。都走 hf-mirror,别断网
 
