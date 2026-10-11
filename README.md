@@ -11,6 +11,7 @@ reads your live lens data through ZOS-API, runs analyses for real numbers, and p
 
 ```cmd
 cd voice-tutor
+python -m venv .venv && .venv\Scripts\pip install -r requirements.txt
 copy .env.example .env      :: 填 GLM_API_KEY(open.bigmodel.cn 注册,免费档够用)
 .venv\Scripts\python bot.py
 ```

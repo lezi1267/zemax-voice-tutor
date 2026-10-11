@@ -23,12 +23,12 @@
 
 1. 复制 `.env.example` 为 `.env`,填 `GLM_API_KEY`([open.bigmodel.cn](https://open.bigmodel.cn) 注册后在"API Keys"里创建,`glm-4-flash` 免费档不用充值)
 2. 麦克风插好(笔记本自带即可),最好戴耳机
-3. `.venv` 已经建好;万一要重建:`python -m venv .venv` 然后 `.venv\Scripts\pip install -r requirements.txt`
+3. 仓库不含 `.venv`(1.4 GB 依赖不上传)。先建:`python -m venv .venv`,再 `.venv\Scripts\pip install -r requirements.txt`
 
 ## 跑
 
 ```cmd
-cd D:\ASDF\aas\zemax\学习游戏\voice-tutor
+cd voice-tutor
 .venv\Scripts\python bot.py
 ```
 
