@@ -21,6 +21,7 @@ copy .env.example .env      :: 填 GLM_API_KEY(open.bigmodel.cn 注册,免费档
 要读数/指路功能:先开 Zemax,点 **编程 → 交互扩展**(bot 会自动连上并驯服那个锁人的小窗)。
 没开 Zemax 也能纯聊天。
 
+装不上、首次下载要多久、Zemax 前置条件:[INSTALL.md](INSTALL.md)。
 完整说明、音色选择、常见坑:[voice-tutor/README.md](voice-tutor/README.md)。
 想桌面双击启动:`pwsh voice-tutor/install_shortcut.ps1` 建桌面快捷方式(控制台自动最小化)。
 想挑音色:`voice-tutor\.venv\Scripts\python voice-tutor\make_samples.py` 生成试听音频到 `voice-tutor\samples\`。
