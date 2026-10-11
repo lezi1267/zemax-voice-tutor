@@ -44,6 +44,11 @@ import piper.download_voices as _piper_dl
 _piper_dl.VOICES_JSON = _piper_dl.VOICES_JSON.replace("huggingface.co", "hf-mirror.com")
 _piper_dl.URL_FORMAT = _piper_dl.URL_FORMAT.replace("huggingface.co", "hf-mirror.com")
 
+# piper 中文音色要 g2pW 拼音模型(152 MB),它的 download_model 也是 urllib 直连 huggingface.co
+import piper.phonemize_chinese as _piper_zh
+
+_piper_zh.G2PW_URL = _piper_zh.G2PW_URL.replace("huggingface.co", "hf-mirror.com")
+
 # g2pW(拼音音素)用的 transformers 启动时会探测 huggingface.co 并重试 5 次,让它离线走本地缓存
 os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 

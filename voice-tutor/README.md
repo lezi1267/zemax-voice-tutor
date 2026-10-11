@@ -24,6 +24,8 @@
 1. 复制 `.env.example` 为 `.env`,填 `GLM_API_KEY`([open.bigmodel.cn](https://open.bigmodel.cn) 注册后在"API Keys"里创建,`glm-4-flash` 免费档不用充值)
 2. 麦克风插好(笔记本自带即可),最好戴耳机
 3. 仓库不含 `.venv`(1.4 GB 依赖不上传)。先建:`python -m venv .venv`,再 `.venv\Scripts\pip install -r requirements.txt`
+4. 要读数/指路:你自己得有 **Zemax OpticStudio**(2023 R1 实测过),启动前点 **编程 → 交互扩展**。没有 Zemax 也能跑,只是只剩聊天 + 看屏幕
+5. 首次要下的东西:依赖 1.4 GB、SenseVoice 识别模型 896 MB、piper 音色 60 MB(用 piper 时再加 g2pW 拼音模型 152 MB)。都走 hf-mirror,别断网
 
 ## 跑
 
@@ -66,7 +68,7 @@ cd voice-tutor
 试听音频不在仓库里(各家 TTS 的输出,有版权):`.venv\Scripts\python make_samples.py` 生成 edge 版到 `samples\`。
 
 中文可选音色(Piper 就这么多,都是本地免费):
-- `zh_CN-xiao_ya-medium` — 年轻女声,更活泼(**现用**);需要 g2pW 拼音模型(已下到本目录),重建环境时装 `piper-tts[zh]`
+- `zh_CN-xiao_ya-medium` — 年轻女声,更活泼;首次用会自动下 g2pW 拼音模型(152 MB,已改走 hf-mirror),需要 `[zh]` extra 里的 `g2pw` 查表
 - `zh_CN-huayan-medium` — 温柔女声
 - 想要真正标准/甜的普通话:`TTS_ENGINE=edge`(微软免费,晓晓,试听 samples\edge_xiaoxiao.wav)/ `minimax`(云端付费,音色用 `MINIMAX_VOICE` 挑)
 
