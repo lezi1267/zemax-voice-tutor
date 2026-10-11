@@ -5,6 +5,7 @@ __pycache__/
 progress.json
 knowledge/
 backups/
+g2pW/
 *.zmx
 *.zda
 .env
