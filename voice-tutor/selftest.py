@@ -9,6 +9,7 @@ import shutil
 import sys
 import tempfile
 import time
+import zipfile
 from pathlib import Path
 
 # 中文 Windows 上 stdout 一旦被重定向/管道就走 GBK,遇到 ³ ≈ 这类字符直接 UnicodeEncodeError 崩掉。
@@ -118,6 +119,32 @@ async def main():
            and lc_out.get("倍率色差_um") == 12.345 and zemax_tools._parse_longitudinal("空") == {},
            f"{la_out} {lc_out}")
 
+    # 1f) 赛德尔 / 场曲畸变 解析(样本就是真机 SeidelCoefficients 与 FieldCurvatureAndDistortion 的文本形状)
+    seidel = ("赛德尔像差系数:\n\n表面\tSPHA  S1\tCOMA  S2\tASTI  S3\tFCUR  S4\tDIST  S5\tCLA (CL)\tCTR (CT)\n"
+              "光阑\t   -0.000000\t   -0.000000\t   -0.000000\t   -0.000000\t    0.000000\t   -0.000000\t   -0.000000\t\n"
+              "  2\t    0.002249\t    0.002761\t    0.003390\t    0.005148\t    0.010483\t   -0.005306\t   -0.006515\t\n"
+              "像面\t    0.000000\t    0.000000\t    0.000000\t    0.000000\t    0.000000\t    0.000000\t    0.000000\t\n"
+              "累计\t    0.002249\t    0.002761\t    0.003390\t    0.005148\t    0.010483\t   -0.005306\t   -0.006515\t\n")
+    fcd = ("畸变类型: F-Tan(Theta)\n最大畸变 = 0.4403%\n畸变焦距 = 3.29267\n"
+           "  Y 角度 (度)\tTan位移\t矢高位移\t实部高度\t参考高度\t畸变\n"
+           "     0.00000000\t   95.59759454\t   95.59759454\t     0.00000000\t     0.00000000\t     0.00000000 %\n"
+           "     7.00000000\t   95.19694451\t   95.41483285\t     0.16092552\t     0.16103865\t   -0.07025272 %\n")
+    se = zemax_tools._parse_seidel(seidel)
+    fc = zemax_tools._parse_field_curvature(fcd)
+    report("赛德尔/场曲畸变 解析(取累计行/场曲=Tan-矢高)",
+           se.get("S1球差") == 0.002249 and se.get("S5畸变") == 0.010483
+           and se.get("CT倍率色差") == -0.006515
+           and fc.get("最大畸变_pct") == 0.4403 and fc.get("畸变焦距_mm") == 3.29267
+           and fc.get("最大视场_度") == 7.0
+           and abs(fc.get("场曲_mm_最大视场") - (95.19694451 - 95.41483285)) < 1e-6,
+           f"{se} {fc}")
+
+    # 1g) 学习报告生成(纯函数,不写文件)
+    rep = lessons._report_text({"done": [2, 3], "current": 3,
+                                "log": [{"time": "2026-10-07 19:21", "lesson": 3, "note": "RMS 3.1μm"}]})
+    report("学习报告生成", "第2课" in rep and "RMS 3.1μm" in rep and "第 3 课" in rep,
+           rep[:50].replace("\n", " / "))
+
     # 2) 课程工具 + 学习档案
     def mk_params(args=None):
         state = {}
@@ -129,6 +156,29 @@ async def main():
                 state["r"] = r
 
         return P(), state
+
+    # 2a) 工具 handler 的公共包装:短期缓存 + 超时兜底(5 个读数工具共用,以前各抄一遍)
+    calls = {"n": 0}
+
+    def _work(args=None):
+        calls["n"] += 1
+        return {"值": calls["n"]}
+
+    handler = zemax_tools._make_handler("selftest_tool", "自检:跑一次", _work, timeout=5, ttl=60)
+    p, st = mk_params({})
+    await handler(p)
+    p2, st2 = mk_params({})
+    await handler(p2)
+    report("工具包装(缓存命中不重跑)",
+           st["r"].get("值") == 1 and st2["r"].get("值") == 1 and "缓存" in st2["r"] and calls["n"] == 1,
+           f"实际跑了 {calls['n']} 次")
+
+    def _boom(args=None):
+        raise RuntimeError("读数炸了")
+
+    p, st = mk_params({})
+    await zemax_tools._make_handler("selftest_boom", "自检", _boom, ttl=0)(p)
+    report("工具包装(异常变成 error 而不是炸掉对话)", "error" in st.get("r", {}), str(st.get("r"))[:60])
 
     for n, expect in [(1, "第 1 课"), (2, "第 2 课"), (9, "第 9 课"), (10, "毕业项目")]:
         p, st = mk_params({"lesson": n})
@@ -221,12 +271,16 @@ async def main():
         return st.get("r", {})
 
     zr = zemax_ready()
+    # 只测只读工具。edit_zemax / run_optimize / scan_param / quick_focus / restore_lens 会真改镜头,
+    # 自检绝不碰学生的设计(那几条靠 voice-tutor\_probe_* 探针在 standalone 实例上实测过)。
     if zr:
         for name, handler, args in [
                 ("read_lde", zemax_tools._read_lde_handler, None),
                 ("read_analysis", zemax_tools._read_analysis_handler, None),
                 ("read_mtf", zemax_tools._read_mtf_handler, None),
                 ("read_color", zemax_tools._read_color_handler, None),
+                ("read_aberration", zemax_tools._read_aberration_handler, None),
+                ("read_merit", zemax_tools._read_merit_handler, None),
                 ("point_at", zemax_tools._point_at_handler, {"name": "分析"})]:
             r = await run_tool(handler, args)
             if "error" in r and "交互扩展" in r["error"]:
@@ -255,10 +309,17 @@ async def main():
                        f"RMS={rms} EFL={efl if efl is not None else r.get('EFL_error')}"
                        + (f" {r.get('提醒', '')}" if rms == 0 else "")
                        if rms is not None else str(r)[:120])
+            elif name == "read_aberration":
+                got = {k: v for k, v in r.items() if not k.endswith("失败")}
+                report(name, "error" not in r and bool(got), str(got)[:120])
+            elif name == "read_merit":
+                report(name, "error" not in r,
+                       f"评价函数={r.get('评价函数值')} 操作数={len(r.get('操作数', []))} 变量格={r.get('变量格数')}"
+                       if "error" not in r else str(r)[:100])
             else:
                 report(name, r.get("ok") is True, f"指向={r.get('指向')}" if r.get("ok") else str(r)[:60])
     else:
-        for n in ("read_lde", "read_analysis", "read_mtf", "read_color"):
+        for n in ("read_lde", "read_analysis", "read_mtf", "read_color", "read_aberration", "read_merit"):
             report(n, None, "Zemax 没开或交互扩展没开,跳过(线上会返回友好提示)")
         # point_at 只依赖窗口存在:Zemax 没开时也必须返回友好错误,不能把对话炸掉
         try:
@@ -321,6 +382,103 @@ async def main():
         report("OCR 引擎(合成图实测)", "3.14" in joined or "108.04" in joined, joined[:40])
     except Exception as e:
         report("OCR 引擎(合成图实测)", False, str(e)[:60])
+
+    # 6b) 视觉模型:同一张合成图交给 GLM 视觉模型看(OCR 只认字,它还得说出形状和关系)
+    try:
+        from PIL import Image, ImageDraw
+
+        import vision
+
+        img = Image.new("RGB", (640, 200), "white")
+        ImageDraw.Draw(img).text((20, 40), "Standard Spot Diagram\nRMS Spot Radius: 0.0123 mm",
+                                 fill="black")
+        ans = vision.ask(img, "读出图里的标题和所有数字。")
+        report("视觉模型看图(合成图实测)", "0.012" in ans, f"{vision.VISION_MODELS} → {ans[:50]}")
+    except Exception as e:
+        s = str(e)
+        # 没配 key / 免费档被挤爆(429)不是代码坏了 —— SKIP,别把自检染成 FAIL
+        report("视觉模型看图(合成图实测)", None if ("GLM_API_KEY" in s or "429" in s) else False, s[:80])
+
+    # 6c) run_analysis 的分析名解析(纯函数,不连 Zemax):中文别名 / 英文模糊 / 没命中给候选
+    names = ["StandardSpot", "RayFan", "WavefrontMap", "FftMtf", "ToleranceHistogram",
+             "RelativeIllumination", "SystemCheck"]
+    t1, t2, t3, t4, t5 = (zemax_tools._resolve_analysis(n, names)
+                          for n in ("波前", "tolerance histogram", "MTF", "相对照度", "没这个东西"))
+    report("run_analysis 分析名解析(中文别名/英文模糊/没命中给候选)",
+           t1[0] == "WavefrontMap" and t2[0] == "ToleranceHistogram" and t3[0] == "FftMtf"
+           and t4[0] == "RelativeIllumination" and t5[0] is None and len(t5[1]) == len(names),
+           f"波前→{t1[0]} 英文→{t2[0]} 没命中候选{len(t5[1])}")
+
+    # 6d) 拖文件学习:docx 抽文本 → 切块 → 检索命中(沙盒目录,不碰真资料)
+    try:
+        import knowledge
+
+        tmp = Path(tempfile.mkdtemp())
+        real_dir, real_inbox = knowledge.DIR, knowledge.INBOX
+        knowledge.DIR = tmp / "knowledge"
+        knowledge.INBOX = knowledge.DIR / "收件箱"
+        try:
+            docx = tmp / "自检资料.docx"
+            with zipfile.ZipFile(docx, "w") as z:
+                z.writestr("word/document.xml",
+                           "<w:document><w:body><w:p><w:r><w:t>自检资料:光阑直径太小会引起渐晕,"
+                           "边缘视场的光线被挡掉。</w:t></w:r></w:p></w:body></w:document>")
+            r = knowledge.learn(docx)
+            hit = knowledge.query("渐晕和光阑直径")
+            inbox = knowledge.INBOX
+            inbox.mkdir(parents=True, exist_ok=True)
+            (tmp / "笔记.md").write_text("# 自检笔记\n\n出瞳处放光阑最干净。\n", encoding="utf-8")
+            shutil.copy(tmp / "笔记.md", inbox / "笔记.md")
+            new = knowledge.scan_inbox()
+            report("拖文件学习(docx 抽取 + 词/向量检索 + 收件箱)",
+                   bool(r.get("ok")) and bool(hit.get("命中")) and "渐晕" in hit["命中"][0]["原文"]
+                   and any(n.get("ok") for n in new)
+                   and (hit.get("检索") != "词 + 向量" or hit["命中"][0]["向量分"] > 0),
+                   f"{r.get('字数')}字 [{hit.get('检索')}] 命中:{hit['命中'][0]['来源']} 收件箱新学{len(new)}份")
+        finally:
+            knowledge.DIR, knowledge.INBOX = real_dir, real_inbox
+            shutil.rmtree(tmp, ignore_errors=True)
+    except Exception as e:
+        report("拖文件学习(docx 抽取 + 词/向量检索 + 收件箱)", False, str(e)[:80])
+
+    # 6f) MAIN_VISION:截图挂进对话(假 context,不联网)—— 主模型看像素,不听转述
+    try:
+        from PIL import Image
+        from pipecat.frames.frames import LLMRunFrame
+        from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+
+        import vision
+
+        msgs = []
+
+        class FakeCtx:
+            def add_message(self, m):
+                msgs.append(m)
+
+        saved = (vision._ctx, vision._pending, vision.MAIN_VISION)
+        vision._ctx, vision._pending, vision.MAIN_VISION = FakeCtx(), [], True
+        try:
+            vision.queue(Image.new("RGB", (64, 48), "white"))
+            assert vision._pending, "queue 没存下截图"
+            sp = vision.ScreenVision()
+            sp.link(FrameProcessor())
+            await sp.process_frame(LLMRunFrame(), FrameDirection.DOWNSTREAM)
+            report("MAIN_VISION 截图挂进对话",
+                   len(msgs) == 1 and msgs[0]["role"] == "user"
+                   and msgs[0]["content"][0]["type"] == "image_url"
+                   and len(msgs[0]["content"][0]["image_url"]["url"]) > 100
+                   and not vision._pending,
+                   f"注入{len(msgs)}条带图消息,挂完清空队列")
+        finally:
+            vision._ctx, vision._pending, vision.MAIN_VISION = saved
+    except Exception as e:
+        report("MAIN_VISION 截图挂进对话", False, str(e)[:80])
+
+    # 6e) 工具真挂上了(以前加工具漏挂 TOOLS 列表 = 写了但助教调不到)
+    tool_names = {t.name for t in [*zemax_tools.TOOLS, *lessons.TOOLS, *knowledge.TOOLS]}
+    need = {"look_screen", "run_analysis", "learn_file", "list_knowledge", "ask_knowledge"}
+    report("新工具已挂进 LLM 工具清单", need <= tool_names,
+           f"共{len(tool_names)}个工具,缺{sorted(need - tool_names) or '无'}")
 
     # 7) Minimax TTS:raw HTTP 按生产的同款参数打一发,验 key/端点/音色 + 首包延迟
     api_key = os.getenv("MINIMAX_API_KEY", "").strip()

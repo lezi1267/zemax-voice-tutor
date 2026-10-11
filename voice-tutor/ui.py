@@ -20,7 +20,16 @@ def _owner():
         ctypes.windll.shcore.SetProcessDpiAwareness(2)
     except Exception:
         pass
-    _root = tk.Tk()
+    _root = None
+
+    try:
+        from tkinterdnd2 import TkinterDnD
+
+        _root = TkinterDnD.Tk()  # 对话小窗要接得住拖进来的文件;没装就退回普通 Tk
+    except Exception:
+        import tkinter as tk
+
+        _root = tk.Tk()
     _root.withdraw()  # 主根只当宿主,自己不显示
 
     def poll():

@@ -112,6 +112,52 @@ async def warm_connect(timeout: float = 25):
         logger.warning(f"启动时连 Zemax 失败(用到时还会再试): {e}")
 
 
+_TIMEOUT_MSG = "读取超时:请检查 Zemax 的交互扩展小窗是否还开着,关掉重开一次再说。"
+_cache: dict[str, tuple[float, dict]] = {}  # 工具名 -> (时间, 结果):GLM 一轮里连呼同一个工具会刷屏
+
+
+def _cached(name: str, ttl: float):
+    hit = _cache.get(name)
+    if hit is not None and time.time() - hit[0] < ttl:
+        r = dict(hit[1])
+        r["缓存"] = f"这是{int(ttl)}秒内的结果,直接用,别再调"
+        return r
+    return None
+
+
+def _make_handler(name: str, status: str, work, timeout: float = 30, ttl: float = 15,
+                  drop_conn_on_error: bool = True):
+    """把阻塞的 work() 包成工具 handler:worker 线程跑、超时兜底、卡死的连接不复用、只缓存成功结果。
+
+    以前每个读数工具把这套流程各抄一遍(5 份、约 100 行),改一处要改五处。"""
+    async def handler(params) -> None:
+        global _conn
+        import chat_window
+
+        cached = _cached(name, ttl) if ttl else None
+        if cached is not None:
+            await params.result_callback(cached)
+            return
+        chat_window.log("系统", status)
+        try:
+            # COM 在交互扩展没开时会傻等很久,不能让它冻住语音管线
+            result = await asyncio.wait_for(asyncio.to_thread(work, params.arguments or {}),
+                                            timeout=timeout)
+        except asyncio.TimeoutError:
+            if drop_conn_on_error:
+                _conn = None
+            result = {"error": _TIMEOUT_MSG}
+        except Exception as e:
+            if drop_conn_on_error:
+                _conn = None
+            result = {"error": str(e)}
+        if "error" not in result:
+            _cache[name] = (time.time(), result)
+        await params.result_callback(result)
+
+    return handler
+
+
 
 def _lde_snapshot(oss):
     """读 LDE 全部面参数 + 孔径,返回 dict。阻塞,worker 线程专用。驯窗由 _connect_sync 负责。"""
@@ -178,27 +224,14 @@ def _lde_snapshot(oss):
     return result
 
 
-def _read_lde_sync():
+def _read_lde_sync(args=None):
     """阻塞连接+读数,只准在 asyncio.to_thread 的 worker 线程里跑。"""
     with _zemax_busy_timeout():
         return _lde_snapshot(_connect_sync())
 
 
-async def _read_lde_handler(params) -> None:
-    global _conn
-    import chat_window
-
-    chat_window.log("系统", "正在读你的镜头数据……")
-    try:
-        # 20 秒兜底:COM 连接在扩展模式没开时会傻等很久,不能让它冻住语音管线
-        result = await asyncio.wait_for(asyncio.to_thread(_read_lde_sync), timeout=20)
-    except asyncio.TimeoutError:
-        _conn = None  # 卡住的连接不复用
-        result = {"error": "读取超时:请检查 Zemax 的交互扩展小窗是否还开着,关掉重开一次再说。"}
-    except Exception as e:
-        _conn = None
-        result = {"error": str(e)}
-    await params.result_callback(result)
+_read_lde_handler = _make_handler("read_lde", "正在读你的镜头数据……", _read_lde_sync,
+                                  timeout=20, ttl=0)  # 学生随时在改,断点核对必须读实时值
 
 
 @atexit.register
@@ -335,7 +368,7 @@ def _cardinal_part(oss):
     return _parse_cardinal(_analysis_text(oss, zp.constants.Analysis.AnalysisIDM.CardinalPoints))
 
 
-def _read_analysis_sync():
+def _read_analysis_sync(args=None):
     """点列图 RMS + RayFan 边缘 + Cardinal Points 焦距 + LDE 结构快照,一次全给。阻塞,worker 线程专用。"""
     with _zemax_busy_timeout():
         oss = _connect_sync()  # 里面已经驯过一次窗
@@ -352,30 +385,8 @@ def _read_analysis_sync():
             out["提醒"] = "焦距算不出来 + RMS=0:这不是像质好,是系统里没有有效镜头,先看镜头数据"
         return out
 
-_last_analysis = (0.0, None)  # (时间, 结果),15 秒内复用,防 GLM 连呼刷屏
-
-
-async def _read_analysis_handler(params) -> None:
-    global _conn, _last_analysis
-    import chat_window
-
-    if _last_analysis[1] is not None and time.time() - _last_analysis[0] < 15:
-        r = dict(_last_analysis[1])
-        r["缓存"] = "这是15秒内的结果,直接用,别再调"
-        await params.result_callback(r)
-        return
-    chat_window.log("系统", "正在跑点列图分析,几秒钟……")
-    try:
-        result = await asyncio.wait_for(asyncio.to_thread(_read_analysis_sync), timeout=30)
-    except asyncio.TimeoutError:
-        _conn = None
-        result = {"error": "读取超时:请检查 Zemax 的交互扩展小窗是否还开着,关掉重开一次再说。"}
-    except Exception as e:
-        _conn = None
-        result = {"error": str(e)}
-    if "error" not in result:
-        _last_analysis = (time.time(), result)  # 只缓存成功结果
-    await params.result_callback(result)
+_read_analysis_handler = _make_handler("read_analysis", "正在跑点列图分析,几秒钟……",
+                                       _read_analysis_sync)
 
 
 read_analysis_schema = FunctionSchema(
@@ -483,7 +494,7 @@ def _parse_lateral_color(text: str) -> dict:
     return {"倍率色差_um": round(max(vals), 4)} if vals else {}
 
 
-def _read_color_sync():
+def _read_color_sync(args=None):
     """轴向色差 + 倍率色差(第 4 课消色差的核心验收数字)。阻塞,worker 线程专用。"""
     with _zemax_busy_timeout():
         oss = _connect_sync()
@@ -514,30 +525,7 @@ def _read_color_sync():
         return out
 
 
-_last_color = (0.0, None)  # (时间, 结果),15 秒内复用,防 GLM 连呼刷屏
-
-
-async def _read_color_handler(params) -> None:
-    global _conn, _last_color
-    import chat_window
-
-    if _last_color[1] is not None and time.time() - _last_color[0] < 15:
-        r = dict(_last_color[1])
-        r["缓存"] = "这是15秒内的结果,直接用,别再调"
-        await params.result_callback(r)
-        return
-    chat_window.log("系统", "正在跑色差分析,几秒钟……")
-    try:
-        result = await asyncio.wait_for(asyncio.to_thread(_read_color_sync), timeout=30)
-    except asyncio.TimeoutError:
-        _conn = None
-        result = {"error": "读取超时:请检查 Zemax 的交互扩展小窗是否还开着,关掉重开一次再说。"}
-    except Exception as e:
-        _conn = None
-        result = {"error": str(e)}
-    if "error" not in result:
-        _last_color = (time.time(), result)
-    await params.result_callback(result)
+_read_color_handler = _make_handler("read_color", "正在跑色差分析,几秒钟……", _read_color_sync)
 
 
 read_color_schema = FunctionSchema(
@@ -553,35 +541,12 @@ read_color_schema = FunctionSchema(
 )
 
 
-_last_mtf = (0.0, None)  # (时间, 结果),15 秒内复用,防 GLM 连呼刷屏
-
-
-def _read_mtf_sync():
+def _read_mtf_sync(args=None):
     with _zemax_busy_timeout():
         return _mtf_part(_connect_sync())
 
 
-async def _read_mtf_handler(params) -> None:
-    global _conn, _last_mtf
-    import chat_window
-
-    if _last_mtf[1] is not None and time.time() - _last_mtf[0] < 15:
-        r = dict(_last_mtf[1])
-        r["缓存"] = "这是15秒内的结果,直接用,别再调"
-        await params.result_callback(r)
-        return
-    chat_window.log("系统", "正在跑 MTF 分析,几秒钟……")
-    try:
-        result = await asyncio.wait_for(asyncio.to_thread(_read_mtf_sync), timeout=30)
-    except asyncio.TimeoutError:
-        _conn = None
-        result = {"error": "读取超时:请检查 Zemax 的交互扩展小窗是否还开着,关掉重开一次再说。"}
-    except Exception as e:
-        _conn = None
-        result = {"error": str(e)}
-    if "error" not in result:
-        _last_mtf = (time.time(), result)
-    await params.result_callback(result)
+_read_mtf_handler = _make_handler("read_mtf", "正在跑 MTF 分析,几秒钟……", _read_mtf_sync)
 
 
 read_mtf_schema = FunctionSchema(
@@ -698,8 +663,7 @@ point_at_schema = FunctionSchema(
 
 # ---------- OCR 读屏:补 API/UIA 的盲区(图上的标注、赛德尔系数表、报错弹窗等) ----------
 
-_ocr = None
-_last_screen = (0.0, None)  # (时间, 结果),10 秒内复用,防 GLM 连呼刷屏
+_ocr = None  # RapidOCR 单例,模型加载要几秒
 
 
 def _get_ocr():
@@ -735,7 +699,7 @@ def _ocr_lines(img) -> list:
     return lines
 
 
-def _read_screen_sync():
+def _read_screen_sync(args=None):
     """截全屏 → OCR。阻塞,worker 线程专用。"""
     import shot
 
@@ -745,31 +709,23 @@ def _read_screen_sync():
     for l in lines:
         l["x"] += ox
         l["y"] += oy  # 换成屏幕绝对坐标,和 point_at / 小幽灵用的是同一套坐标
-    return {
+    out = {
         "屏幕宽高": list(img.size),
         "文字行数": len(lines),
         "文字行": lines[:120],
         "说明": "x/y 是文字左上角的屏幕绝对坐标,按从上到下从左到右排列" if lines else "屏幕上没认出文字",
     }
+    if len(lines) < 3:
+        # OCR 认不出字(图上的曲线、图标、非文字内容)就换视觉模型看,别只回一句"没认出文字"
+        import vision
+
+        vision.queue(img)
+        out["视觉描述"] = vision.ask(img, "屏幕上有什么窗口和图?图上的标题、坐标轴、曲线形状、数值分别是什么?")
+    return out
 
 
-async def _read_screen_handler(params) -> None:
-    global _last_screen
-    import time
-
-    import chat_window
-
-    if _last_screen[1] is not None and time.time() - _last_screen[0] < 10:
-        await params.result_callback(_last_screen[1])
-        return
-    chat_window.log("系统", "正在读屏(OCR),几秒钟……")
-    try:
-        result = await asyncio.wait_for(asyncio.to_thread(_read_screen_sync), timeout=45)
-    except Exception as e:
-        result = {"error": f"读屏失败:{e}"}
-    if "error" not in result:
-        _last_screen = (time.time(), result)  # 只缓存成功结果,失败下次真重试
-    await params.result_callback(result)
+_read_screen_handler = _make_handler("read_screen", "正在读屏(OCR),几秒钟……", _read_screen_sync,
+                                     timeout=90, ttl=10, drop_conn_on_error=False)  # 读屏不碰 Zemax 连接
 
 
 read_screen_schema = FunctionSchema(
@@ -783,3 +739,609 @@ read_screen_schema = FunctionSchema(
     required=[],
     handler=_read_screen_handler,
 )
+
+
+def _look_screen_sync(args=None):
+    """截屏(可裁剪) → 视觉模型看图。API 读不到的图形几何(点列图形状、MTF 怎么掉)靠它。"""
+    import shot
+    import vision
+
+    img = shot.grab()
+    ox, oy = shot.origin()
+    x, y = int(args.get("x") or 0), int(args.get("y") or 0)
+    w, h = int(args.get("w") or 0), int(args.get("h") or 0)
+    cropped = w > 0 and h > 0
+    if cropped:
+        left, top = max(x - ox, 0), max(y - oy, 0)
+        img = img.crop((left, top, min(left + w, img.width), min(top + h, img.height)))
+    q = str(args.get("question") or "").strip() or (
+        "这是 Zemax OpticStudio 的屏幕截图。说清:有哪些窗口和分析图;"
+        "每张图的标题、横纵轴和量程、曲线或点的分布形状;图上标出的数值逐个报出来。")
+    vision.queue(img)  # MAIN_VISION 开着时:这张图下一轮直接进对话,她看像素而不是转述
+    return {"看到了": vision.ask(img, q),
+            "说明": "整屏" if not cropped else f"已裁剪到 ({x},{y}) 起 {w}x{h} 这一块",
+            "图已挂进对话": vision.MAIN_VISION}
+
+
+_look_screen_handler = _make_handler("look_screen", "正在看你的屏幕……", _look_screen_sync,
+                                     timeout=90, ttl=10, drop_conn_on_error=False)  # 看屏不碰 Zemax 连接
+
+
+look_screen_schema = FunctionSchema(
+    name="look_screen",
+    description=(
+        "用视觉模型看学生屏幕上的图:点列图/MTF/光扇图的形状和趋势、弹窗长什么样、API 读不到的图形内容。"
+        "question 写清要看什么(如'这张 MTF 在 30 线对每毫米掉到多少、子午弧矢差多少')。"
+        "只想看某一块就带 x/y/w/h 屏幕坐标(read_screen 或 point_at 给过的坐标),不带就是整屏。"
+        "要精确数字优先 read_analysis / run_analysis,看图是用来理解形状的。"
+    ),
+    properties={
+        "question": {"type": "string", "description": "要它看什么、回答什么"},
+        "x": {"type": "integer", "description": "裁剪区左上角屏幕 x,不裁剪填 0"},
+        "y": {"type": "integer", "description": "裁剪区左上角屏幕 y,不裁剪填 0"},
+        "w": {"type": "integer", "description": "裁剪区宽度像素,不裁剪填 0"},
+        "h": {"type": "integer", "description": "裁剪区高度像素,不裁剪填 0"},
+    },
+    required=["question"],
+    handler=_look_screen_handler,
+)
+
+
+# ---------- 通用分析:ZOS-API 有 156 个分析,长尾靠这一个兜,不用一个个写解析器 ----------
+
+_ANALYSIS_ALIAS = {
+    "点列图": "StandardSpot", "标准点列图": "StandardSpot", "spot": "StandardSpot",
+    "光扇图": "RayFan", "光线像差": "RayFan", "rayfan": "RayFan",
+    "赛德尔图": "SeidelDiagram", "赛德尔系数": "SeidelCoefficients",
+    "mtf": "FftMtf", "调制传递函数": "FftMtf", "几何mtf": "GeometricMtf",
+    "轴向像差": "LongitudinalAberration", "纵向像差": "LongitudinalAberration",
+    "倍率色差": "LateralColor", "垂轴色差": "LateralColor",
+    "场曲畸变": "FieldCurvatureAndDistortion", "场曲": "FieldCurvatureAndDistortion",
+    "网格畸变": "GridDistortion",
+    "基点": "CardinalPoints", "焦距": "CardinalPoints",
+    "波前": "WavefrontMap", "包围能量": "GeometricEncircledEnergy",
+    "点扩散": "FftPsf", "psf": "FftPsf",
+    "焦点位移": "FocalShiftDiagram", "焦点漂移": "FocalShiftDiagram",
+    "光程差": "OpticalPathFan", "渐晕": "VignettingDiagramSettings",
+    "相对照度": "RelativeIllumination", "照明": "RelativeIllumination",
+    "阴影模型": "ShadedModel", "系统检查": "SystemCheck",
+    "公差直方图": "ToleranceHistogram", "公差良率": "ToleranceYield", "良率": "QuickYield",
+    "透过率": "Transmission", "光线追迹": "RayTrace", "光线路径": "PathAnalysis",
+    "泽尼克": "ZernikeStandardCoefficients", "离焦点列": "ThroughFocusSpot",
+    "全视场像差": "FullFieldAberration", "干涉图": "Interferogram",
+    "rms弥散": "RMSFocus", "表面数据": "SurfaceDataSettings", "系统数据": "SystemData",
+}
+
+
+def _analysis_names() -> list[str]:
+    """ZOS-API 的全部分析名。常量表要 CLR 初始化之后才有(没连过 Zemax 会抛)。"""
+    A = zp.constants.Analysis.AnalysisIDM
+    return [n for n in dir(A) if not n.startswith("_") and n not in ("count", "index")]
+
+
+def _resolve_analysis(name: str, names: list[str]) -> tuple:
+    """中文/英文分析名 → AnalysisIDM 成员名,返回 (名字, 候选)。纯函数,自检能直接测。"""
+    s = str(name).strip().lower().replace(" ", "")
+    if not s:
+        return None, names
+    alias = _ANALYSIS_ALIAS.get(s)
+    if alias and alias in names:
+        return alias, []
+    flat = {n.lower(): n for n in names}
+    if s in flat:
+        return flat[s], []
+    cand = [n for n in names if s in n.lower()]
+    if len(cand) == 1:
+        return cand[0], []
+    return None, cand or names
+
+
+def _run_analysis_sync(args=None):
+    name = str((args or {}).get("name", "")).strip()
+    with _zemax_busy_timeout():
+        oss = _connect_sync()
+        target, cand = _resolve_analysis(name, _analysis_names())
+        if not target:
+            return {"error": f"没认出分析名「{name}」", "可选分析": cand[:60]}
+        text = _analysis_text(oss, getattr(zp.constants.Analysis.AnalysisIDM, target))
+    lines = [l.rstrip() for l in text.splitlines() if l.strip()]
+    if not lines:
+        return {"分析": target, "说明": "这个分析没有文本输出(只有图):改用 look_screen 看图"}
+    return {"分析": target, "行数": len(lines), "数据": "\n".join(lines[:140]),
+            "说明": "原始分析输出文本,自己从里面挑数字,单位看表头"
+                    + ("" if len(lines) <= 140 else f"(共 {len(lines)} 行,只给了前 140 行)")}
+
+
+_run_analysis_handler = _make_handler("run_analysis", "正在跑分析,几秒钟……",
+                                      _run_analysis_sync, timeout=60)
+
+run_analysis_schema = FunctionSchema(
+    name="run_analysis",
+    description=(
+        "跑学生 Zemax 里的任意一个分析,返回它的原始文本数据(数字都在文本里)。"
+        "name 填分析名,中文英文都行(如 波前、包围能量、焦点位移、渐晕、相对照度、公差直方图、SeidelDiagram)。"
+        "点列图/MTF/色差/赛德尔有专用工具(read_analysis、read_mtf、read_color、read_aberration)的优先用,数字更干净。"
+    ),
+    properties={"name": {"type": "string", "description": "分析名字,中文或英文"}},
+    required=["name"],
+    handler=_run_analysis_handler,
+)
+
+
+# ---------- 读数:赛德尔系数 / 场曲畸变(第 2、7 课的分析图,API 直接给数字) ----------
+
+_SEIDEL_KEYS = ("S1球差", "S2彗差", "S3像散", "S4场曲", "S5畸变", "CLA轴向色差", "CT倍率色差")
+
+
+def _parse_seidel(text: str) -> dict:
+    """SeidelCoefficients 文本 → 累计赛德尔系数。
+    表头 '表面  SPHA S1  COMA S2 …'(中英文表头一样有 SPHA),取 '累计'/'Cumulative' 那行。"""
+    out = {}
+    started = False
+    for line in text.splitlines():
+        s = line.strip()
+        if not started:
+            started = "SPHA" in s
+            continue
+        nums = re.findall(r"-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?", s)
+        if len(nums) < 7:
+            continue
+        out = {k: round(float(v), 6) for k, v in zip(_SEIDEL_KEYS, nums[:7])}
+        if s.startswith(("累计", "Cumulative")):
+            break
+    return out or {"赛德尔说明": "没读到赛德尔系数表:分析没跑成,先看视场和波长设了没有"}
+
+
+def _parse_field_curvature(text: str) -> dict:
+    """FieldCurvatureAndDistortion 文本 → 最大畸变%、畸变焦距、最大视场处的场曲(Tan 位移 − 矢高位移,mm)。
+    数据行 6 列:视场角 Tan位移 矢高位移 实部高度 参考高度 畸变%。"""
+    out = {}
+    m = re.search(r"(?:最大畸变|Maximum Distortion)\s*[:=]\s*(-?[\d.]+)\s*%", text)
+    if m:
+        out["最大畸变_pct"] = float(m.group(1))
+    m = re.search(r"(?:畸变焦距|Distortion Focal Length)\s*[:=]\s*(-?[\d.]+)", text)
+    if m:
+        out["畸变焦距_mm"] = float(m.group(1))
+    rows = []
+    for line in text.splitlines():
+        p = line.replace("%", "").split()
+        if len(p) != 6:
+            continue
+        try:
+            rows.append([float(x) for x in p])
+        except ValueError:
+            continue
+    if rows:
+        worst = max(rows, key=lambda r: abs(r[0]))
+        out["最大视场_度"] = round(abs(worst[0]), 4)
+        out["场曲_mm_最大视场"] = round(worst[1] - worst[2], 6)  # 子午像面 - 弧矢像面
+    return out or {"场曲说明": "场曲/畸变分析没给出数据行:先对焦再跑一次"}
+
+
+def _read_aberration_sync(args=None):
+    """赛德尔系数 + 场曲/畸变,一次给全(第 2 课看图、第 7 课用指标说话)。"""
+    with _zemax_busy_timeout():
+        oss = _connect_sync()
+        out = {}
+        for name, aid, parse in (
+                ("赛德尔", zp.constants.Analysis.AnalysisIDM.SeidelCoefficients, _parse_seidel),
+                ("场曲畸变", zp.constants.Analysis.AnalysisIDM.FieldCurvatureAndDistortion,
+                 _parse_field_curvature)):
+            try:
+                out.update(parse(_analysis_text(oss, aid)))
+            except Exception as e:
+                out[name + "读取失败"] = str(e)[:120]
+        return out
+
+
+_read_aberration_handler = _make_handler("read_aberration", "正在读赛德尔系数和场曲畸变……",
+                                         _read_aberration_sync)
+
+read_aberration_schema = FunctionSchema(
+    name="read_aberration",
+    description=(
+        "读赛德尔像差系数(S1球差 S2彗差 S3像散 S4场曲 S5畸变 + CLA/CT 色差,累计值)和场曲/畸变"
+        "(最大畸变%、畸变焦距、最大视场处的子午-弧矢场曲 mm)。学生问'球差多大''什么像差最狠'"
+        "'场曲/畸变多少''像面弯不弯'(第 2、7 课)时调用,拿实测系数讲,别凭点列图猜。"
+    ),
+    properties={},
+    required=[],
+    handler=_read_aberration_handler,
+)
+
+
+# ---------- 助教动手:改镜头 / 备份回滚 / 跑优化 / 扫参数(改之前一律先备份) ----------
+
+BACKUP_DIR = Path(__file__).resolve().parent / "backups"
+
+_SURFACE_ATTR = {"半径": "Radius", "厚度": "Thickness", "材料": "Material",
+                 "半口径": "SemiDiameter", "注释": "Comment"}
+_SURFACE_CELL = {"半径是变量": "RadiusCell", "厚度是变量": "ThicknessCell"}
+_READ_TOOLS = ("read_lde", "read_analysis", "read_mtf", "read_color", "read_aberration")
+
+
+def _drop_cache(*names):
+    """改过镜头就把旧读数缓存全作废 —— 不然助教会拿改前的数字说'改好了'。"""
+    for n in names or _READ_TOOLS:
+        _cache.pop(n, None)
+
+
+def _backup_lens(oss) -> str:
+    """动手改之前先存一份到 voice-tutor\\backups\\:改坏了 restore_lens 拉得回来。"""
+    BACKUP_DIR.mkdir(exist_ok=True)
+    # 名字带到毫秒:同一秒里连改两次(优化+扫描)不会互相覆盖
+    p = BACKUP_DIR / ("lens_" + time.strftime("%Y%m%d_%H%M%S") + f"_{int(time.time() * 1000 % 1000):03d}.zmx")
+    oss.save_as(str(p))
+    return p.name
+
+
+def _apply_surface_edit(oss, e: dict) -> dict:
+    try:
+        n = int(e.get("面"))
+    except (TypeError, ValueError):
+        return {"错误": "面序号不是数字"}
+    s = oss.LDE.GetSurfaceAt(n)
+    out = {"面": n, "改动": {}}
+    for zh, attr in _SURFACE_ATTR.items():
+        if e.get(zh) is not None:
+            before = getattr(s, attr)
+            setattr(s, attr, e[zh])
+            out["改动"][zh] = f"{before} → {getattr(s, attr)}"
+    for zh, cell in _SURFACE_CELL.items():
+        if e.get(zh) is not None:
+            c = getattr(s, cell)
+            # IEditorCell 没有 RemoveSolve,Solve 又是只读属性 —— 只有 MakeSolveVariable / MakeSolveFixed
+            (c.MakeSolveVariable if e[zh] else c.MakeSolveFixed)()
+            out["改动"][zh] = "变量" if e[zh] else "固定"
+    return out
+
+
+def _edit_zemax_sync(args=None):
+    """插/删面、改 LDE 某面、系统孔径、加波长、加视场。改前自动备份,改完立刻回读实际值给学生核对。"""
+    args = args or {}
+    with _zemax_busy_timeout():
+        oss = _connect_sync()
+        backup = _backup_lens(oss)
+        sysd = {}
+        # 第 1 课要插面:先插/删,再按新序号改参数,不然索引全错位
+        for n in args.get("插入面") or []:
+            oss.LDE.InsertNewSurfaceAt(int(n))
+            sysd.setdefault("插入面", []).append(int(n))
+        for n in args.get("删除面") or []:
+            oss.LDE.RemoveSurfaceAt(int(n))
+            sysd.setdefault("删除面", []).append(int(n))
+        out = {"已备份": backup, "改动": [_apply_surface_edit(oss, e) for e in args.get("面改动") or []]}
+        if args.get("孔径值") is not None:
+            before = oss.SystemData.Aperture.ApertureValue
+            oss.SystemData.Aperture.ApertureValue = float(args["孔径值"])
+            sysd["孔径值"] = f"{before} → {oss.SystemData.Aperture.ApertureValue}"
+        for wl in args.get("加波长") or []:
+            oss.SystemData.Wavelengths.AddWavelength(float(wl), 1.0)
+            sysd.setdefault("加波长", []).append(wl)
+        for y in args.get("加视场") or []:
+            oss.SystemData.Fields.AddField(0.0, float(y), 1.0)
+            sysd.setdefault("加视场", []).append(y)
+        if sysd:
+            out["系统设置改动"] = sysd
+        _drop_cache()
+        out["改完之后"] = _lde_snapshot(oss)
+        return out
+
+
+_edit_zemax_handler = _make_handler("edit_zemax", "正在改你的镜头(改之前先存了一份备份)……",
+                                    _edit_zemax_sync, timeout=40, ttl=0)
+
+edit_zemax_schema = FunctionSchema(
+    name="edit_zemax",
+    description=(
+        "替学生直接改 Zemax:插入/删除面、某面的半径/厚度/材料/半口径/注释、把半径或厚度设为变量/取消变量、"
+        "系统孔径值、加波长、加视场。学生说'你帮我改''直接改成XX''插入一个面''帮我加个波长 0.4861''加 7 度视场'时调用。"
+        "改之前自动备份到 backups\\,返回的'改完之后'是实际读回的值 —— 必须照这个报给学生,别只说'改好了'。"
+        "课件里要求学生自己练的步骤不要代做,除非学生明确让你改。"
+    ),
+    properties={
+        "插入面": {"type": "array", "items": {"type": "integer"}, "description": "在这个序号处插入新面,如 [2]"},
+        "删除面": {"type": "array", "items": {"type": "integer"}},
+        "面改动": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "面": {"type": "integer", "description": "面序号(0=物面,1=光阑,2 起是透镜面)"},
+                    "半径": {"type": "number"}, "厚度": {"type": "number"},
+                    "材料": {"type": "string", "description": "玻璃牌号,如 BK7 / F2 / SK16"},
+                    "半口径": {"type": "number"}, "注释": {"type": "string"},
+                    "半径是变量": {"type": "boolean"}, "厚度是变量": {"type": "boolean"},
+                },
+                "required": ["面"],
+            },
+        },
+        "孔径值": {"type": "number"},
+        "加波长": {"type": "array", "items": {"type": "number"}, "description": "波长 µm,如 [0.4861, 0.6563]"},
+        "加视场": {"type": "array", "items": {"type": "number"}, "description": "离轴视场角度,如 [7]"},
+    },
+    required=[],
+    handler=_edit_zemax_handler,
+)
+
+
+def _restore_lens_sync(args=None):
+    """把镜头拉回备份状态(默认最近一次备份)。"""
+    args = args or {}
+    with _zemax_busy_timeout():
+        oss = _connect_sync()
+        files = sorted(BACKUP_DIR.glob("lens_*.zmx")) if BACKUP_DIR.exists() else []
+        if not files:
+            return {"error": "没有备份可回滚:backups\\ 是空的"}
+        name = str(args.get("备份", "")).strip()
+        p = files[-1] if not name else BACKUP_DIR / name
+        if not p.exists():
+            return {"error": "找不到备份 " + name + ";最近的有: " + ", ".join(f.name for f in files[-5:])}
+        oss.load(str(p))
+        _drop_cache()
+        return {"已恢复": p.name, "现在": _lde_snapshot(oss),
+                "还有这些备份": [f.name for f in files[-5:]]}
+
+
+_restore_lens_handler = _make_handler("restore_lens", "正在把镜头拉回备份……", _restore_lens_sync,
+                                      timeout=40, ttl=0)
+
+restore_lens_schema = FunctionSchema(
+    name="restore_lens",
+    description=(
+        "把学生的镜头恢复成上一次备份(每次 edit_zemax/run_optimize 前都自动存过)。"
+        "学生说'改坏了''撤销''恢复原样'时调用;备份 是可选文件名,不填就用最近的一份。"
+    ),
+    properties={"备份": {"type": "string", "description": "备份文件名,如 lens_20261010_2015.zmx;留空=最近一次"}},
+    required=[],
+    handler=_restore_lens_handler,
+)
+
+
+def _build_default_mfe(oss):
+    """学生没建评价函数时,替他建最小的两个:RSCE(RMS 光斑半径,就是第 3 课的"参照:光斑半径")+ EFFL 钉住当前焦距。
+
+    实测对比(同一个 f/5 单透镜):GUI 的优化向导默认生成 41 个 DMFS/OPDX(畸变)操作数,
+    优化把焦距从 97mm 压到 74mm、RMS 6618µm;这两个操作数只有 3 行,焦距稳在 97.27mm、RMS 3927µm。"""
+    row = oss.MFE.InsertNewOperandAt(oss.MFE.NumberOfOperands + 1)
+    row.ChangeType(zp.constants.Editors.MFE.MeritOperandType.RSCE)
+    row.Weight = 1.0
+    return _pin_efl(oss)
+
+
+def _pin_efl(oss):
+    """往 MFE 里补一个 EFFL 操作数,目标 = 当前焦距,权重 1 —— 优化时焦距不会漂走。返回目标值。"""
+    efl = _cardinal_part(oss).get("EFL_mm")
+    if not efl:
+        return None
+    row = oss.MFE.InsertNewOperandAt(oss.MFE.NumberOfOperands + 1)
+    row.ChangeType(zp.constants.Editors.MFE.MeritOperandType.EFFL)
+    row.Target = float(efl)
+    row.Weight = 1.0
+    return round(float(efl), 4)
+
+
+def _num(v):
+    """nan / inf 不往 LLM 里塞(它会把 inf 当数据念出来)。"""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return v
+    return round(f, 6) if math.isfinite(f) else None
+
+
+def _real_operands(oss) -> list:
+    """MFE 里真正的操作数。DeleteAllRows 之后还会剩一行 BLNK(空行),别把它当'已建评价函数'。"""
+    return [oss.MFE.GetOperandAt(i) for i in range(1, oss.MFE.NumberOfOperands + 1)
+            if str(oss.MFE.GetOperandAt(i).Type) != "BLNK"]
+
+
+def _read_merit_sync(args=None):
+    """评价函数编辑器(MFE)里有什么操作数 + 当前评价函数值。"""
+    with _zemax_busy_timeout():
+        oss = _connect_sync()
+        rows = []
+        for r in _real_operands(oss):
+            # IMFERow 只有 Type/Target/Weight/Value/Contribution 这些,没有 Surface1 之类的列名
+            rows.append({"行": r.RowIndex, "操作数": str(r.Type), "目标": _num(r.Target), "权重": _num(r.Weight),
+                         "当前值": _num(r.Value), "对评价函数的贡献": _num(r.Contribution)})
+        nvar = sum(1 for i in range(oss.LDE.NumberOfSurfaces)
+                   if str(oss.LDE.GetSurfaceAt(i).RadiusCell.Solve).strip() == "Variable"
+                   or str(oss.LDE.GetSurfaceAt(i).ThicknessCell.Solve).strip() == "Variable")
+        return {"评价函数值": oss.MFE.CalculateMeritFunction(), "操作数": rows, "变量格数": nvar,
+                "说明": "评价函数值越小越好;操作数是空的说明还没建评价函数(优化向导)"
+                if not rows else ""}
+
+
+_read_merit_handler = _make_handler("read_merit", "正在读评价函数……", _read_merit_sync, ttl=10)
+
+read_merit_schema = FunctionSchema(
+    name="read_merit",
+    description=(
+        "读评价函数编辑器(MFE):里面每个操作数(类型/面/参数/目标/权重)和当前评价函数值,以及有多少个变量格。"
+        "第 3 课优化前后对比、学生问'评价函数多少''我建对操作数了吗''有几个变量'时调用。"
+    ),
+    properties={},
+    required=[],
+    handler=_read_merit_handler,
+)
+
+
+def _run_optimize_sync(args=None):
+    """把指定面设为变量 → 需要时自动跑优化向导建 MFE → 跑本地优化,报评价函数前后 + 实际改动。"""
+    args = args or {}
+    with _zemax_busy_timeout():
+        oss = _connect_sync()
+        backup = _backup_lens(oss)
+        made = []
+        for v in args.get("变量") or []:
+            try:
+                n, item = int(v[0]), str(v[1])
+            except (TypeError, ValueError, IndexError):
+                made.append({"错误": "变量要填 [面, 半径|厚度]"})
+                continue
+            cell = oss.LDE.GetSurfaceAt(n).RadiusCell if "半径" in item else oss.LDE.GetSurfaceAt(n).ThicknessCell
+            cell.MakeSolveVariable()
+            made.append(f"{n}面{item}")
+        if not _real_operands(oss):
+            pinned = _build_default_mfe(oss)
+        else:
+            pinned = None
+        if not _real_operands(oss):
+            return {"error": "评价函数建不起来:让学生在 MFE 里右键>优化向导", "已备份": backup}
+        before = oss.MFE.CalculateMeritFunction()
+        try:
+            efl_before = _cardinal_part(oss).get("EFL_mm")
+        except Exception:
+            efl_before = None
+        tool = oss.Tools.OpenLocalOptimization()
+        if tool is None:
+            return {"error": "优化器打不开:Zemax 里可能已经有别的工具窗口在跑", "已备份": backup}
+        try:
+            tool.RunAndWaitForCompletion()
+            ok, err = bool(tool.Succeeded), str(tool.ErrorMessage or "")
+        finally:
+            tool.Close()
+        _drop_cache()
+        out = {"已备份": backup, "设为变量": made,
+               "评价函数": {"优化前": before, "优化后": oss.MFE.CalculateMeritFunction()},
+               "成功": ok, "报错": err, "改完之后": _lde_snapshot(oss)}
+        if pinned:
+            out["自动建的评价函数"] = f"RSCE(RMS 光斑半径)+ EFFL 目标 {pinned} mm —— 焦距不会漂"
+        elif not _real_operands(oss):
+            out["提醒"] = "评价函数里没有约束焦距的操作数,焦距可能漂走"
+        # 优化只朝"评价函数最小"跑:没有 EFFL 之类的操作数,焦距会一路漂走(第 3 课的坑)
+        try:
+            efl_after = _cardinal_part(oss).get("EFL_mm")
+        except Exception:
+            efl_after = None
+        if efl_before and efl_after and abs(efl_after - efl_before) > 0.02 * abs(efl_before):
+            out["提醒"] = (f"焦距从 {efl_before:.2f} 漂到 {efl_after:.2f} mm:"
+                           "评价函数里没有约束焦距的操作数(加个 EFFL 目标 100 再优化)")
+        return out
+
+
+_run_optimize_handler = _make_handler("run_optimize", "正在跑优化,可能要十几秒……", _run_optimize_sync,
+                                      timeout=120, ttl=0)
+
+run_optimize_schema = FunctionSchema(
+    name="run_optimize",
+    description=(
+        "替学生跑 Zemax 本地优化:先把 变量 里的面(如 [[2,'半径'],[3,'半径']])设为变量,"
+        "评价函数是空的就自动建最小的两个操作数(RSCE 光斑半径 + EFFL 钉住当前焦距),然后执行优化。"
+        "返回优化前后评价函数值和改完的实际镜头数据。学生说'你帮我优化''跑一下优化'时调用;"
+        "第 3 课要学生自己体验优化,别代做,除非他要求。改之前自动备份,可 restore_lens 回滚。"
+    ),
+    properties={
+        "变量": {"type": "array", "items": {"type": "array", "items": {"type": ["integer", "string"]}},
+                 "description": "要设为变量的面,如 [[2,'半径'],[3,'半径']]"},
+    },
+    required=[],
+    handler=_run_optimize_handler,
+)
+
+
+def _scan_param_sync(args=None):
+    """把某个面参数在区间里扫一遍,每个值跑一次点列图 RMS,扫完恢复原值(第 9 课的批量扫描)。"""
+    args = args or {}
+    with _zemax_busy_timeout():
+        oss = _connect_sync()
+        n = int(args.get("面", 2))
+        attr = _SURFACE_ATTR.get(str(args.get("项", "半径")), "Radius")
+        s = oss.LDE.GetSurfaceAt(n)
+        original = getattr(s, attr)
+        start = float(args.get("起", original - 10))
+        stop = float(args.get("止", original + 10))
+        step = float(args.get("步", 0)) or max((stop - start) / 12, 1e-6)
+        step = max(step, (stop - start) / 12)  # 最多 13 个点:每次点列图都要几秒,别把语音管线挂死
+        rows = []
+        v = start
+        while v <= stop + 1e-9:
+            setattr(s, attr, v)
+            try:
+                rms = _spot_part(oss).get("RMS光斑半径_um")
+            except Exception as e:
+                rms = None
+                rows.append({"值": round(v, 4), "错误": str(e)[:80]})
+                v += step
+                continue
+            rows.append({"值": round(v, 4), "RMS_um": rms})
+            v += step
+        setattr(s, attr, original)
+        _drop_cache()
+        good = [r for r in rows if r.get("RMS_um") is not None]
+        return {"扫描": f"{n}面{args.get('项', '半径')} {start} → {stop} 步长 {step:.4g}",
+                "结果": rows, "最好": min(good, key=lambda r: r["RMS_um"]) if good else None,
+                "已恢复原值": original}
+
+
+_scan_param_handler = _make_handler("scan_param", "正在扫描参数(每个值跑一次点列图)……",
+                                    _scan_param_sync, timeout=180, ttl=0)
+
+scan_param_schema = FunctionSchema(
+    name="scan_param",
+    description=(
+        "批量扫描:把某面的半径/厚度/材料/半口径从 起 扫到 止(步长 步),每个值跑一次点列图 RMS,"
+        "返回表格和最好的那个值,扫完自动恢复原值。第 9 课'机器替你试遍参数'的活,学生说"
+        "'扫一遍''帮我找最好的半径''换个玻璃试试'时调用。"
+    ),
+    properties={
+        "面": {"type": "integer"},
+        "项": {"type": "string", "enum": ["半径", "厚度", "材料", "半口径"]},
+        "起": {"type": "number"}, "止": {"type": "number"}, "步": {"type": "number"},
+    },
+    required=["面"],
+    handler=_scan_param_handler,
+)
+
+
+def _quick_focus_sync(args=None):
+    """跑 Quick Focus 自动对焦(第 1 课那一下),报改完的像面位置。"""
+    with _zemax_busy_timeout():
+        oss = _connect_sync()
+        tool = oss.Tools.OpenQuickFocus()
+        if tool is None:
+            return {"error": "Quick Focus 打不开:先关掉 Zemax 里开着的其它工具窗口"}
+        try:
+            tool.RunAndWaitForCompletion()
+            ok, err = bool(tool.Succeeded), str(tool.ErrorMessage or "")
+        finally:
+            tool.Close()
+        _drop_cache()
+        return {"成功": ok, "报错": err,
+                "像面位置": oss.LDE.GetSurfaceAt(oss.LDE.NumberOfSurfaces - 1).Thickness}
+
+
+_quick_focus_handler = _make_handler("quick_focus", "正在自动对焦……", _quick_focus_sync, timeout=60, ttl=0)
+
+quick_focus_schema = FunctionSchema(
+    name="quick_focus",
+    description=(
+        "跑 Quick Focus 自动对焦:Zemax 自己把像面位置调到最清晰。学生说'帮我对焦''图像糊,调一下像面'时调用。"
+    ),
+    properties={},
+    required=[],
+    handler=_quick_focus_handler,
+)
+
+
+# 助教的全部 Zemax 工具。bot.py 只 import 这一个清单 —— 以前这里加一个工具要在
+# bot.py 改两处(import 一行 + tools 列表一行),漏一处就是"工具写了但没挂上"。
+TOOLS = [
+    read_lde_schema,
+    read_analysis_schema,
+    read_mtf_schema,
+    read_color_schema,
+    read_aberration_schema,
+    read_merit_schema,
+    read_screen_schema,
+    look_screen_schema,
+    run_analysis_schema,
+    point_at_schema,
+    edit_zemax_schema,
+    restore_lens_schema,
+    run_optimize_schema,
+    scan_param_schema,
+    quick_focus_schema,
+]
+

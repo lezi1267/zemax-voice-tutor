@@ -51,6 +51,7 @@ from pipecat.frames.frames import (
     ErrorFrame,
     Frame,
     InterimTranscriptionFrame,
+    InterruptionFrame,
     LLMRunFrame,
     StartFrame,
     TranscriptionFrame,
@@ -83,10 +84,10 @@ from pipecat.turns.user_mute import MuteUntilFirstBotCompleteUserMuteStrategy
 from dotenv import load_dotenv
 
 import chat_window
+import knowledge
 import lessons
+import vision
 import zemax_tools
-from lessons import read_lesson_schema, finish_lesson_schema, save_step_schema
-from zemax_tools import point_at_schema, read_analysis_schema, read_color_schema, read_lde_schema, read_mtf_schema, read_screen_schema
 
 load_dotenv(override=True)
 
@@ -107,8 +108,7 @@ SYSTEM = (
     "课件要设视场/波长或把某个面设为变量:read_lde 返回里有 视场、波长、半径是变量、厚度是变量,用它核对。"
     "带课要学生点界面元素时:调用 point_at 指给他看,再告诉他下一步。"
     "学生报验收数字:用 read_analysis/read_lde 实测对比,当场判定过/不过、差在哪;"
-    "判定通过才调用 finish_lesson 记录进度(note 写一句话讲评)。"
-    "每次下达新的操作步骤后调用 save_step 记断点(step 一句话复述该步),学生重启程序后能接着学;"
+    "判定通过才调用 finish_lesson 记录进度(note 写一句话讲评)。"    "每次下达新的操作步骤后调用 save_step 记断点(step 一句话复述该步),学生重启程序后能接着学;"
     "学生说'继续/接着上次的':调 read_lesson(课号填档案当前课),档案里'断点'还在就从那步的下一步直接带,不重念课件、不重复已给步骤。"
     "EFFL 之类的数:read_analysis 返回里有 EFL_mm(Zemax Cardinal Points 实测,带符号),"
     "用实测值,不要自己估。返回 EFL_error 就说明这个系统现在没有光焦度或分析没跑成,"
@@ -118,6 +118,25 @@ SYSTEM = (
     "先用 read_lde 读实际值,按实际状态调整教学(比如课件说 EPD20 而实际是 10,就按 10 讲)。"
     "学生对图形读数报的数字:先对照单位和理论方向检查,明显不合理(如 Ray Fan 边缘 215mm)"
     "就追问单位和读法,别照单全收;实测和理论方向矛盾时,先怀疑读数,陪学生一起排查再下结论。"
+    "问球差/彗差/像散/场曲/畸变是什么在起作用:调用 read_aberration 拿赛德尔系数(S1~S5+色差)和场曲畸变实测值。"
+    "问评价函数、有几个变量:调用 read_merit。"
+    "学生让你动手改镜头(改半径/厚度/材料、设变量、加波长、加视场、改孔径):调用 edit_zemax,"
+    "它改之前自动备份,返回的'改完之后'是实际读回的值 —— 照这个报,别只说'改好了'。"
+    "课件里要求他自己操作的步骤不要代做,只有他明确让你改才改。"
+    "学生说改坏了/撤销/恢复原样:调用 restore_lens 拉回最近备份。"
+    "学生让你跑优化:调用 run_optimize(评价函数是空的它会自动建一套),报优化前后的评价函数值。"
+    "学生让你找最佳参数(如'扫一遍半径'):调用 scan_param,它扫完会恢复原值,报最好的那个点。"
+    "对话小窗底部有输入框:学生不想说话或环境吵就打字提问;按 Esc 打断她念话。"
+    "学生要学习总结/报告:调用 write_report 写成文件,告诉他文件在哪,别整份念。"
+    "专用读数工具没覆盖的分析(波前、包围能量、焦点位移、渐晕、相对照度、公差直方图、泽尼克…):"
+    "调用 run_analysis,name 填分析名,数字在它返回的原始文本里,自己挑,单位看表头。"
+    "要看图本身(点列图是什么形状、MTF 曲线怎么往下掉、弹窗长什么样):调用 look_screen,"
+    "question 写清要看什么;要细看某一块就带 read_screen/point_at 给过的 x/y/w/h。"
+    "要精确数字优先 API 读数,看图是用来理解形状的。"
+    "学生拖文件进对话小窗、说'我拖了个资料/我拖进收件箱了'、或给你文件路径:调用 learn_file 学会它,"
+    "学完用一句话告诉他你学到了什么(字数、关键词)。只说拖了没给路径:调 list_knowledge,它会顺手扫收件箱。"
+    "学生问'你学过哪些资料':调 list_knowledge。要引资料原文讲课、或学生问'那份资料里怎么说':"
+    "先调 ask_knowledge 再回答,并说出出自哪份资料;没命中就如实说,别编。"
     "用纯文本,不用 markdown,不用 emoji。没把握的才承认不确定,别编。"
 )
 
@@ -418,7 +437,8 @@ async def run_bot(transport) -> None:
         ),
     )
 
-    context = LLMContext(tools=[read_lesson_schema, read_lde_schema, read_analysis_schema, read_mtf_schema, read_color_schema, point_at_schema, finish_lesson_schema, save_step_schema, read_screen_schema])
+    context = LLMContext(tools=[*zemax_tools.TOOLS, *lessons.TOOLS, *knowledge.TOOLS])
+    vision.attach_context(context)  # 截图要往这里挂
     user_agg, assistant_agg = LLMContextAggregatorPair(
         context,
         user_params=LLMUserAggregatorParams(
@@ -436,6 +456,7 @@ async def run_bot(transport) -> None:
             Greeting(context),
             stt,
             user_agg,
+            vision.ScreenVision(),  # MAIN_VISION 开着时把截图挂进对话;关着就是个直通
             llm,
             tts,
             transport.output(),
@@ -444,6 +465,26 @@ async def run_bot(transport) -> None:
     )
 
     task = PipelineTask(pipeline, params=PipelineParams(enable_metrics=True), observers=[ChatLogObserver()])
+
+    # 对话小窗的输入框:打字提问走的是和开场白同一条路(写进上下文 + LLMRunFrame),
+    # 不假装有麦克风;Esc 打断 = 直接投 InterruptionFrame,和语音打断同一个机制。
+    loop = asyncio.get_running_loop()
+
+    def _type_in(text):
+        chat_window.log("你", text)
+
+        def go():
+            context.add_message({"role": "user", "content": text})
+            asyncio.ensure_future(task.queue_frame(LLMRunFrame()))
+
+        loop.call_soon_threadsafe(go)
+
+    def _interrupt():
+        chat_window.log("系统", "(你按 Esc 打断了她)")
+        loop.call_soon_threadsafe(lambda: asyncio.ensure_future(task.queue_frame(InterruptionFrame())))
+
+    chat_window.set_handlers(_type_in, _interrupt)
+
     runner = PipelineRunner()
     await runner.run(task)
 
@@ -482,6 +523,8 @@ def _startup_checks():
     """启动自检:硬伤在开场前就喊出来,别等学生开口才发现。"""
     if not os.getenv("GLM_API_KEY"):
         chat_window.log("系统", "警告:.env 里没配 GLM_API_KEY,她答不了话。去 open.bigmodel.cn 申请,填进 voice-tutor\\.env 后重启。")
+    if vision.MAIN_VISION and "v" not in os.getenv("GLM_MODEL", "").replace("glm-", ""):
+        chat_window.log("系统", "警告:MAIN_VISION=1 但 GLM_MODEL 不带视觉。换成 GLM_MODEL=glm-4.6v-flash(免费)或 glm-4.6v,否则屏幕图会被 API 拒收。")
     try:
         import pyaudio
 

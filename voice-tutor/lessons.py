@@ -176,3 +176,54 @@ read_lesson_schema = FunctionSchema(
     required=["lesson"],
     handler=_read_lesson_handler,
 )
+
+
+def _report_text(p: dict) -> str:
+    """学习档案 → 一份学习报告(纯文本,能直接发给别人)。"""
+    done = sorted(p.get("done", []))
+    log = p.get("log", [])
+    out = ["# 光学设计学习报告",
+           "",
+           f"生成时间:{time.strftime('%Y-%m-%d %H:%M')}",
+           f"已完成:{'、'.join(f'第{n}课' for n in done) or '还没有'}(推进到第 {p.get('current', 0)} 课)",
+           f"学习记录:{len(log)} 条"]
+    cp = p.get("checkpoint")
+    if cp:
+        out.append(f"未完成的断点:第{cp.get('lesson')}课 —— {cp.get('step', '')}")
+    out += ["", "## 每课讲评"]
+    for e in log:
+        out.append(f"- {e.get('time', '')} 第{e.get('lesson')}课:{e.get('note', '')}")
+    if not log:
+        out.append("(还没有验收记录)")
+    return "\n".join(out) + "\n"
+
+
+async def _write_report_handler(params) -> None:
+    """把学习档案写成 学习报告.md:学生说'给我一份学习报告''总结一下我学到哪'时调用。"""
+    p = load_progress()
+    path = BASE / "学习报告.md"
+    path.write_text(_report_text(p), encoding="utf-8")
+    await params.result_callback({
+        "ok": True,
+        "文件": str(path),
+        "已完成": sorted(p.get("done", [])),
+        "断点": p.get("checkpoint"),
+        "提示": "报告已写成文件,告诉学生文件在哪,别把整份念一遍",
+    })
+
+
+write_report_schema = FunctionSchema(
+    name="write_report",
+    description=(
+        "根据学习档案生成一份 学习报告.md(已完成课程、每课讲评、当前断点)。"
+        "学生说'给我一份学习报告''总结一下我学到哪了''我要发给别人'时调用。"
+    ),
+    properties={},
+    required=[],
+    handler=_write_report_handler,
+)
+
+
+# bot.py 只 import 这个清单,加新工具改一处就够。
+TOOLS = [read_lesson_schema, finish_lesson_schema, save_step_schema, write_report_schema]
+

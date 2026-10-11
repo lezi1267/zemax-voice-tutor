@@ -3,6 +3,10 @@ __pycache__/
 *.wav
 *.mp3
 progress.json
+knowledge/
+backups/
+*.zmx
+*.zda
 .env
 _selftest.txt
 _selftest.log
