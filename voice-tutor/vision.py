@@ -7,6 +7,7 @@
 import base64
 import io
 import os
+import time
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -37,7 +38,7 @@ def attach_context(ctx) -> None:
 def queue(img) -> None:
     """把截图挂到下一轮对话(最多攒 2 张,别把上下文塞满)。"""
     if MAIN_VISION and len(_pending) < 2:
-        _pending.append(base64.b64encode(_jpeg(img)).decode())
+        _pending.append((time.time(), base64.b64encode(_jpeg(img)).decode()))
 
 
 class ScreenVision(FrameProcessor):
@@ -46,7 +47,11 @@ class ScreenVision(FrameProcessor):
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
         if isinstance(frame, LLMRunFrame) and _pending and _ctx is not None:
-            for b64 in _pending:
+            now = time.time()
+            for t, b64 in _pending:
+                # 学生看完屏幕半天不说话:别把十分钟前的旧图当"现在的屏幕"挂上去
+                if now - t > 60:
+                    continue
                 _ctx.add_message({"role": "user", "content": [
                     {"type": "image_url", "image_url": {"url": b64}},
                     {"type": "text", "text": "这是学生屏幕的截图,直接看它。"}]})

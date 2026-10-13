@@ -145,6 +145,12 @@ def learn(path) -> dict:
         text = extract(p)
     except Exception as e:
         return {"error": f"{p.name} 读不了:{e}"}
+    try:  # 大 PDF 抽文本+切块+嵌向量要几秒到几十秒,先吱一声,别让对话窗看着像卡死
+        import chat_window
+
+        chat_window.log("系统", f"正在学《{p.stem}》({len(text)} 字)…")
+    except Exception:
+        pass
     chunks = _chunks(text)
     if not chunks:
         return {"error": f"{p.name} 里没抽出内容"}

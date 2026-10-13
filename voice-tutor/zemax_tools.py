@@ -6,6 +6,7 @@
 """
 import asyncio
 import atexit
+import json
 import math
 import os
 import re
@@ -113,11 +114,16 @@ async def warm_connect(timeout: float = 25):
 
 
 _TIMEOUT_MSG = "读取超时:请检查 Zemax 的交互扩展小窗是否还开着,关掉重开一次再说。"
-_cache: dict[str, tuple[float, dict]] = {}  # 工具名 -> (时间, 结果):GLM 一轮里连呼同一个工具会刷屏
+_cache: dict[str, tuple[float, dict]] = {}  # "工具名|参数" -> (时间, 结果):GLM 一轮里连呼同一个工具会刷屏
 
 
-def _cached(name: str, ttl: float):
-    hit = _cache.get(name)
+def _cache_key(name: str, args: dict) -> str:
+    """带参数的工具必须按参数分开缓存:15 秒内换一个分析(波前→渐晕)否则会拿到上一个的结果。"""
+    return name + "|" + json.dumps(args or {}, sort_keys=True, ensure_ascii=False)
+
+
+def _cached(key: str, ttl: float):
+    hit = _cache.get(key)
     if hit is not None and time.time() - hit[0] < ttl:
         r = dict(hit[1])
         r["缓存"] = f"这是{int(ttl)}秒内的结果,直接用,别再调"
@@ -134,15 +140,16 @@ def _make_handler(name: str, status: str, work, timeout: float = 30, ttl: float 
         global _conn
         import chat_window
 
-        cached = _cached(name, ttl) if ttl else None
+        args = params.arguments or {}
+        key = _cache_key(name, args)
+        cached = _cached(key, ttl) if ttl else None
         if cached is not None:
             await params.result_callback(cached)
             return
         chat_window.log("系统", status)
         try:
             # COM 在交互扩展没开时会傻等很久,不能让它冻住语音管线
-            result = await asyncio.wait_for(asyncio.to_thread(work, params.arguments or {}),
-                                            timeout=timeout)
+            result = await asyncio.wait_for(asyncio.to_thread(work, args), timeout=timeout)
         except asyncio.TimeoutError:
             if drop_conn_on_error:
                 _conn = None
@@ -151,8 +158,8 @@ def _make_handler(name: str, status: str, work, timeout: float = 30, ttl: float 
             if drop_conn_on_error:
                 _conn = None
             result = {"error": str(e)}
-        if "error" not in result:
-            _cache[name] = (time.time(), result)
+        if ttl and "error" not in result:  # ttl=0 的工具不缓存,连写都不写
+            _cache[key] = (time.time(), result)
         await params.result_callback(result)
 
     return handler
@@ -957,13 +964,18 @@ BACKUP_DIR = Path(__file__).resolve().parent / "backups"
 _SURFACE_ATTR = {"半径": "Radius", "厚度": "Thickness", "材料": "Material",
                  "半口径": "SemiDiameter", "注释": "Comment"}
 _SURFACE_CELL = {"半径是变量": "RadiusCell", "厚度是变量": "ThicknessCell"}
-_READ_TOOLS = ("read_lde", "read_analysis", "read_mtf", "read_color", "read_aberration")
+# 改镜头后要作废的读数缓存:凡是"读当前镜头/当前屏幕"的都要在 —— 漏一个,
+# 助教就会拿改前的数说"改好了"(read_merit / run_analysis / 看屏 以前就漏在外面)
+_READ_TOOLS = ("read_lde", "read_analysis", "read_mtf", "read_color", "read_aberration",
+               "read_merit", "run_analysis", "read_screen", "look_screen")
 
 
 def _drop_cache(*names):
-    """改过镜头就把旧读数缓存全作废 —— 不然助教会拿改前的数字说'改好了'。"""
-    for n in names or _READ_TOOLS:
-        _cache.pop(n, None)
+    """改过镜头就把旧读数缓存全作废 —— 不然助教会拿改前的数字说'改好了'。
+    缓存键是 "工具名|参数",所以按前缀匹配着删。"""
+    targets = names or _READ_TOOLS
+    for k in [k for k in _cache if k.split("|")[0] in targets]:
+        _cache.pop(k, None)
 
 
 def _backup_lens(oss) -> str:

@@ -180,6 +180,23 @@ async def main():
     await zemax_tools._make_handler("selftest_boom", "自检", _boom, ttl=0)(p)
     report("工具包装(异常变成 error 而不是炸掉对话)", "error" in st.get("r", {}), str(st.get("r"))[:60])
 
+    # 2b) 缓存键要带参数:15 秒内把「波前」换成「渐晕」不能拿到上一个的结果;改镜头后按工具名清干净
+    seen = []
+
+    def _by_arg(args=None):
+        seen.append(args.get("name"))
+        return {"分析": args.get("name")}
+
+    dash = zemax_tools._make_handler("selftest_arged", "自检", _by_arg, ttl=60)
+    for args in ({"name": "波前"}, {"name": "渐晕"}, {"name": "波前"}):
+        p, st = mk_params(args)
+        await dash(p)
+    zemax_tools._drop_cache("selftest_arged")
+    left = [k for k in zemax_tools._cache if k.startswith("selftest_arged")]
+    report("工具缓存按参数分开 + drop 按工具名清干净",
+           seen == ["波前", "渐晕"] and st["r"].get("分析") == "波前" and "缓存" in st["r"] and not left,
+           f"实跑{seen},drop 后残留 {len(left)} 条")
+
     for n, expect in [(1, "第 1 课"), (2, "第 2 课"), (9, "第 9 课"), (10, "毕业项目")]:
         p, st = mk_params({"lesson": n})
         await lessons._read_lesson_handler(p)
