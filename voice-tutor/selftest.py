@@ -442,6 +442,10 @@ async def main():
                            "边缘视场的光线被挡掉。</w:t></w:r></w:p></w:body></w:document>")
             r = knowledge.learn(docx)
             hit = knowledge.query("渐晕和光阑直径")
+            # 向量存储:量化成 int8 + base64(一块 < 2KB),而不是几 KB 的 float 列表
+            chunk = json.loads(next(knowledge.DIR.glob("*.json")).read_text(
+                encoding="utf-8"))["chunks"][0]
+            vec_ok = "q" not in chunk or (len(chunk["q"]) < 2048 and "vec" not in chunk)
             inbox = knowledge.INBOX
             inbox.mkdir(parents=True, exist_ok=True)
             (tmp / "笔记.md").write_text("# 自检笔记\n\n出瞳处放光阑最干净。\n", encoding="utf-8")
@@ -449,9 +453,10 @@ async def main():
             new = knowledge.scan_inbox()
             report("拖文件学习(docx 抽取 + 词/向量检索 + 收件箱)",
                    bool(r.get("ok")) and bool(hit.get("命中")) and "渐晕" in hit["命中"][0]["原文"]
-                   and any(n.get("ok") for n in new)
+                   and any(n.get("ok") for n in new) and vec_ok
                    and (hit.get("检索") != "词 + 向量" or hit["命中"][0]["向量分"] > 0),
-                   f"{r.get('字数')}字 [{hit.get('检索')}] 命中:{hit['命中'][0]['来源']} 收件箱新学{len(new)}份")
+                   f"{r.get('字数')}字 [{hit.get('检索')}] 命中:{hit['命中'][0]['来源']} "
+                   f"向量{len(chunk.get('q') or '')}字符 收件箱新学{len(new)}份")
         finally:
             knowledge.DIR, knowledge.INBOX = real_dir, real_inbox
             shutil.rmtree(tmp, ignore_errors=True)

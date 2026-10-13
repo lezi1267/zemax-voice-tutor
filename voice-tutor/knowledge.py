@@ -1,13 +1,16 @@
 # -*- coding: utf-8 -*-
 """学生拖一个文件进来 → 抽文本 → 切块存起来 → 教课时检索引用。
 
-存:voice-tutor\\knowledge\\<名字>.json(块 + 关键词 + 向量)。
+存:voice-tutor\\knowledge\\<名字>.json(块 + 关键词 + 向量)。向量归一化后量化成 int8 + base64:
+一个块 1.4KB 而不是 8KB(实测向量占文件 82% → 40%),读回来用 numpy 一次矩阵算完,
+不给每个分量建 Python 对象(50 块的文档:检索内存峰值 5.4MB → 0.2MB)。
 检索:词重叠 × 逆文档频率(jieba 是 funasr 带的)+ 智谱 embedding-2 余弦相似度,两路合分。
 向量拿不到(断网/额度)就自动退回纯词袋,提问不会炸。
 收件箱:voice-tutor\\knowledge\\收件箱\\ —— 把文件拖进去,下次提问自动学会。
 
-ponytail: 每次提问把所有块算一遍余弦,O(总块数),块数上万再考虑 ANN 索引。
+ponytail: 每次提问把所有块算一遍余弦(矩阵乘,几千块毫秒级),块数上万再考虑 ANN 索引。
 """
+import base64
 import json
 import os
 import re
@@ -44,9 +47,46 @@ def _embed(texts: list) -> list | None:
             r.raise_for_status()
             rows = sorted(r.json()["data"], key=lambda d: d.get("index", 0))
             for row in rows:
-                out.append([round(float(v), 4) for v in row["embedding"]])
+                out.append([float(v) for v in row["embedding"]])
         except Exception:
             return None  # 额度/网络问题:纯词袋照样能用
+    return out
+
+
+def _encode_vec(vec) -> str:
+    """向量 → base64(int8)。1024 维浮点写成 JSON 要约 8KB,是资料文件的大头(实测占 82%);
+    先归一化再量化成 int8:1 个块 1.4KB,而且读回来能直接用 numpy 一次算完,不用给每个分量建 Python 对象。"""
+    import numpy as np
+
+    a = np.asarray(vec, dtype=np.float32)
+    n = float(np.linalg.norm(a))
+    if n:
+        a = a / n
+    return base64.b64encode(np.clip(np.round(a * 127), -127, 127).astype(np.int8).tobytes()).decode()
+
+
+def _cos_all(chunks: list, qvec) -> list:
+    """每个块与问题的余弦。老格式(JSON 里直接存 float 列表)也认。
+    返回 float 列表,顺序与 chunks 一致;没有向量的块给 0。"""
+    import numpy as np
+
+    if not qvec:
+        return [0.0] * len(chunks)
+    q = np.frombuffer(base64.b64decode(_encode_vec(qvec)), dtype=np.int8).astype(np.int32)
+    rows, idx = [], []
+    for i, c in enumerate(chunks):
+        raw = c.get("q") or (c.get("vec") and _encode_vec(c["vec"]))
+        if not raw:
+            continue
+        v = np.frombuffer(base64.b64decode(raw), dtype=np.int8).astype(np.int32)
+        if v.shape == q.shape:  # 换过 embedding 模型(1024/2048 维)时别硬拼
+            rows.append(v)
+            idx.append(i)
+    out = [0.0] * len(chunks)
+    if rows:
+        sims = (np.vstack(rows) @ q) / (127.0 * 127.0)
+        for i, s in zip(idx, sims.tolist()):
+            out[i] = float(s)
     return out
 
 
@@ -164,7 +204,7 @@ def learn(path) -> dict:
     vecs = _embed([c["text"] for c in stored])  # 学一次存下来,以后提问只嵌一句话
     if vecs and len(vecs) == len(stored):
         for c, v in zip(stored, vecs):
-            c["vec"] = v
+            c["q"] = _encode_vec(v)
     doc = {"name": p.stem, "path": str(p), "mtime": mtime,
            "learned": time.strftime("%Y-%m-%d %H:%M"), "chars": len(text),
            "keywords": [w for w, _ in sorted(freq.items(), key=lambda x: -x[1])[:12]],
@@ -174,7 +214,7 @@ def learn(path) -> dict:
     os.replace(tmp, doc_path)
     return {"ok": True, "学了": doc["name"], "字数": doc["chars"], "知识块": len(stored),
             "关键词": doc["keywords"], "目录": doc["outline"],
-            "向量": "已存" if any("vec" in c for c in stored) else "没存上(检索退回纯词袋)",
+            "向量": "已存" if any("q" in c for c in stored) else "没存上(检索退回纯词袋)",
             "提示": "要引用它回答问题时调 ask_knowledge(学生的问题)"}
 
 
@@ -202,17 +242,18 @@ def query(question: str, k: int = 3) -> dict:
     if not q and not qv:
         return {"error": "问题里没认出可检索的词,换个说法"}
     df: dict[str, int] = {}
-    for d in docs:
-        for c in d["chunks"]:
-            for w in c["terms"]:
-                df[w] = df.get(w, 0) + 1
-    cand = []
+    flat = []  # [(来源, 块号, 块)]:先摊平,向量一路好一次矩阵算完
     for d in docs:
         for i, c in enumerate(d["chunks"]):
-            kw = sum(1.0 / (1.0 + df.get(w, 1)) for w in q & set(c["terms"]))
-            cos = _cos(qv, c.get("vec")) if qv else 0.0
-            if kw or (qv and c.get("vec")):
-                cand.append([kw, cos, d["name"], i, c["text"]])
+            flat.append((d["name"], i, c))
+            for w in c["terms"]:
+                df[w] = df.get(w, 0) + 1
+    cos_list = _cos_all([c for _, _, c in flat], qv)
+    cand = []
+    for (name, i, c), cos in zip(flat, cos_list):
+        kw = sum(1.0 / (1.0 + df.get(w, 1)) for w in q & set(c["terms"]))
+        if kw or cos:
+            cand.append([kw, cos, name, i, c["text"]])
     if not cand:
         return {"命中": [], "说明": "学过的资料里没有这个词,如实告诉学生,别编"}
     # 余弦有基线(不相关的中文段落也有 0.3 左右),按本次候选的分布归一化才分得开
@@ -231,16 +272,6 @@ def query(question: str, k: int = 3) -> dict:
         # 实测 embedding-2:相关的块 0.53 上下,不相关的 0.34 上下,0.42 以下基本是没讲到
         out["提醒"] = f"相关度很低(词没命中,语义只有 {cos_hi:.2f}):这份资料多半没讲到,如实告诉学生,别硬引"
     return out
-
-
-def _cos(a, b) -> float:
-    if not a or not b:
-        return 0.0
-    n = min(len(a), len(b))
-    dot = sum(a[i] * b[i] for i in range(n))
-    na = sum(v * v for v in a[:n]) ** 0.5
-    nb = sum(v * v for v in b[:n]) ** 0.5
-    return dot / (na * nb) if na and nb else 0.0
 
 
 async def _learn_file_handler(params) -> None:
@@ -352,6 +383,26 @@ if __name__ == "__main__":
         else:
             print("向量不可用,只测了词检索(纯词袋兜底路径)")
             assert query("相对照度渐晕").get("命中") == []
+
+        # 向量存储:int8 + base64(一个块 1.4KB,而不是 float 列表的 8KB);老格式也还得能读
+        stored_doc = json.loads((DIR / "消色差入门.json").read_text(encoding="utf-8"))
+        chunks = stored_doc["chunks"]
+        if "q" in chunks[0]:
+            import base64 as _b64
+
+            assert all(len(c["q"]) < 2048 for c in chunks), "量化后一个块不该超过 2KB"
+            assert all("vec" not in c for c in chunks), "新学的块不该再存 float 列表"
+            legacy = {"name": "老格式", "path": "x", "mtime": 0, "chars": 1, "keywords": [],
+                      "outline": [], "chunks": [dict(chunks[0])]}
+            del legacy["chunks"][0]["q"]
+            raw = _b64.b64decode(chunks[0]["q"])
+            import numpy as _np
+
+            legacy["chunks"][0]["vec"] = [float(v) / 127.0 for v in
+                                          _np.frombuffer(raw, dtype=_np.int8).tolist()]
+            qv = _embed(["火石玻璃配对压色差"])
+            cos = _cos_all(legacy["chunks"], qv[0] if qv else None)[0]
+            assert cos > 0.4, f"老格式(JSON 里存 float 列表)的向量没读出来: cos={cos}"
 
         INBOX.mkdir(parents=True, exist_ok=True)
         shutil.copy(md, INBOX / "副本.md")
