@@ -63,6 +63,7 @@ cd voice-tutor
 | 项 | 现值 | 换成 |
 |---|---|---|
 | LLM 模型 | `GLM_MODEL=glm-4.5-air`(实测 1.3 秒,已关思考) | 免费 `glm-4-flash` 知识浅;更强如 `glm-4.7` 思考慢,语音慎用 |
+| TTS 文本聚合 | `TTS_AGGREGATION=token`(边生成边合成,**实测首音 1.36s**) | 改成 `sentence` = pipecat 原生行为,攒够一整句才开口,语调更连贯但**首音 2.89s** |
 | TTS 引擎 | `TTS_ENGINE=minimax`(实测首包 0.7s,音色 `MINIMAX_VOICE`) | 免费本地用 `piper`;微软免费播音级用 `edge`(首包 2~3s);minimax 新式 sk-api key 不用 GroupId,端点 `MINIMAX_BASE_URL=https://api.minimax.cn/v1/t2a_v2` |
 | STT 精度 | FunASR SenseVoice(实时率 0.08,中文识别全对) | whisper 在本机 CPU 实时率 1.29 不可用;要更快/更准再议 |
 | TTS 音色 | `.env` 里 `PIPER_VOICE = "zh_CN-xiao_ya-medium"`(只对 piper) | 换回 `zh_CN-huayan-medium` 即温柔女声;试听在 `samples\`;minimax 用 `MINIMAX_VOICE` |

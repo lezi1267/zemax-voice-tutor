@@ -502,6 +502,26 @@ async def main():
     report("新工具已挂进 LLM 工具清单", need <= tool_names,
            f"共{len(tool_names)}个工具,缺{sorted(need - tool_names) or '无'}")
 
+    # 6f) TTS 文本聚合默认必须是 token:pipecat 原生 sentence 要攒够一整句才开口,
+    # 实测同一句话同一引擎首音 2.89s vs 1.36s(真实管线测的)
+    try:
+        from pipecat.services.tts_service import TextAggregationMode
+
+        saved = os.environ.pop("TTS_AGGREGATION", None)
+        default_mode = bot._tts_agg()
+        os.environ["TTS_AGGREGATION"] = "sentence"
+        sentence_mode = bot._tts_agg()
+        if saved is None:
+            os.environ.pop("TTS_AGGREGATION", None)
+        else:
+            os.environ["TTS_AGGREGATION"] = saved
+        report("TTS 聚合默认走 token(首音 1.36s vs 2.89s)",
+               default_mode == TextAggregationMode.TOKEN
+               and sentence_mode == TextAggregationMode.SENTENCE,
+               f"默认={default_mode},sentence={sentence_mode}")
+    except Exception as e:
+        report("TTS 聚合默认走 token(首音 1.36s vs 2.89s)", False, str(e)[:80])
+
     # 7) Minimax TTS:raw HTTP 按生产的同款参数打一发,验 key/端点/音色 + 首包延迟
     api_key = os.getenv("MINIMAX_API_KEY", "").strip()
     group_id = os.getenv("MINIMAX_GROUP_ID", "").strip()

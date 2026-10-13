@@ -185,6 +185,17 @@ if _speed != 1.0:
     logger.info("语速 length_scale={}", _speed)
 
 
+def _tts_agg():
+    """TTS 文本聚合模式。pipecat 默认 SENTENCE:攒够一整个句子才开始合成 ——
+    实测同一句话、同一引擎,首音 2.89s;改成 TOKEN(边到边合成)首音 1.36s。
+    嫌语调碎就在 .env 里设 TTS_AGGREGATION=sentence 换回去。"""
+    from pipecat.services.tts_service import TextAggregationMode
+
+    if os.getenv("TTS_AGGREGATION", "token").strip().lower() == "sentence":
+        return TextAggregationMode.SENTENCE
+    return TextAggregationMode.TOKEN
+
+
 def _pick_output_index() -> int | None:
     """按名字片段固定输出设备(.env 里 AUDIO_OUT_DEVICE=耳机名)。
     多套蓝牙耳机来回切时,系统默认输出不可靠,这里锁死。找不到就返回 None 用系统默认。"""
@@ -405,6 +416,7 @@ async def run_bot(transport) -> None:
         tts = EdgeTTSService(
             voice=os.getenv("EDGE_VOICE", "zh-CN-XiaoyiNeural"),
             speed=float(os.getenv("VOICE_SPEED", "1.0")),
+            text_aggregation_mode=_tts_agg(),
         )
     elif engine == "minimax":
         import aiohttp
@@ -419,6 +431,7 @@ async def run_bot(transport) -> None:
             # 国内开放平台是 minimaxi.com(多个 i);pipecat 默认的国际站才是 minimax.io
             base_url=base_url,
             aiohttp_session=session,
+            text_aggregation_mode=_tts_agg(),
             settings=MiniMaxTTSSettings(
                 model=os.getenv("MINIMAX_MODEL", "speech-2.8-turbo"),
                 voice=os.getenv("MINIMAX_VOICE", "female-shaonv"),
@@ -430,7 +443,7 @@ async def run_bot(transport) -> None:
             # pipecat 会无条件拼 ?GroupId=,实测空参数会被服务端拒;新 key 不需要这个参数
             tts._base_url = base_url
     else:
-        tts = PolishedPiper(voice_id=VOICE)
+        tts = PolishedPiper(voice_id=VOICE, text_aggregation_mode=_tts_agg())
     # 脑:智谱 GLM。glm-4.5-air 实测 1.3 秒回答,知识比 glm-4-flash 深;关思考模式(语音等不起长思考)
     llm = OpenAILLMService(
         api_key=os.getenv("GLM_API_KEY"),
