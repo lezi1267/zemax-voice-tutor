@@ -218,6 +218,28 @@ def _pick_output_index() -> int | None:
         p.terminate()
 
 
+class _SpeakLog:
+    """把 TTS 的文本流攒成句子再记进对话小窗。
+
+    TOKEN 聚合下(默认,首音快)每个 token 都会走一次 run_tts,直接 log 就是一行一个字;
+    这里攒着,碰到句末标点/换行才记一条。打断或收尾时调 flush() 把剩下的吐出来。
+    """
+    END = re.compile(r"[。！？!?；;…\n]")
+
+    def __init__(self):
+        self.buf = ""
+
+    def add(self, text: str):
+        self.buf += text
+        if self.END.search(self.buf):
+            self.flush()
+
+    def flush(self):
+        if self.buf.strip():
+            chat_window.log("助教", self.buf.strip())
+        self.buf = ""
+
+
 class EdgeTTSService(TTSService):
     """微软 Edge 朗读接口(免费,无 key):边收边解码,非官方接口,失效就 .env 切回 piper。"""
 
@@ -230,6 +252,7 @@ class EdgeTTSService(TTSService):
         # VOICE_SPEED 是 piper 的 length_scale(越大越慢)。微软那边是百分比 rate:
         # 0.7 → +30%(快),1.2 → -20%(慢)。不换算就是设了没效果。
         self._edge_rate = f"{round((1.0 - speed) * 100):+d}%"
+        self._speak = _SpeakLog()
 
     async def _edge_pcm_stream(self, text: str) -> AsyncGenerator[bytes, None]:
         """从微软接口流式取 mp3,后台线程边收边解码,逐块吐 24k s16 PCM。"""
@@ -305,7 +328,7 @@ class EdgeTTSService(TTSService):
     async def run_tts(self, text: str, context_id: str | None = None) -> AsyncGenerator[Frame, None]:
         # 她念出来的原句,在这里记录最准(管线里文本帧会被重复投递,不可靠)
         text = _plain(text)
-        chat_window.log("助教", text)
+        self._speak.add(text)
         try:
             async for f in self._stream_audio_frames_from_iterator(
                 self._edge_pcm_stream(text), in_sample_rate=24000, context_id=context_id
@@ -315,6 +338,14 @@ class EdgeTTSService(TTSService):
             logger.error(f"Edge TTS exception: {e}")
             yield ErrorFrame(error=str(e))
 
+    async def flush_audio(self, context_id: str | None = None):
+        self._speak.flush()
+        await super().flush_audio(context_id)
+
+    async def stop(self, frame):
+        self._speak.flush()
+        await super().stop(frame)
+
 
 class _TTSPolish:
     """给 TTS 兜两层底:先擦掉 markdown/emoji 再合成,并把真正念出来的句子记进对话小窗。
@@ -322,11 +353,23 @@ class _TTSPolish:
     以前只有 edge 这条路做这两件事 —— minimax/piper 会把 emoji 念成"表情"怪声,
     而且小窗里只有学生的话,看不到助教说了什么。"""
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._speak = _SpeakLog()
+
     async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame, None]:
         text = _plain(text)
-        chat_window.log("助教", text)
+        self._speak.add(text)
         async for f in super().run_tts(text, context_id):
             yield f
+
+    async def flush_audio(self, context_id: str | None = None):
+        self._speak.flush()
+        await super().flush_audio(context_id)
+
+    async def stop(self, frame):
+        self._speak.flush()
+        await super().stop(frame)
 
 
 class PolishedPiper(_TTSPolish, PiperTTSService):
