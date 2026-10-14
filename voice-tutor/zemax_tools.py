@@ -18,7 +18,7 @@ from pathlib import Path
 
 from loguru import logger
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # 上级目录的 zemax_api
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "zemax"))  # 上级的 zemax\ (API/指引/截屏)
 
 import zemax_api  # CLR 初始化要趁主线程(模块导入时),拖到 worker 线程里 pythonnet 会炸
 import zospy as zp

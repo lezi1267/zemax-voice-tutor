@@ -51,7 +51,8 @@ def guide_to(x, y, text, secs=8, wav=None, voice=True):
     voice=False 只画不念 —— 语音助教自己会说话,别用系统 TTS 抢她的嗓子(还会被麦克风收回去)。"""
     if voice:
         speak(text, wav)
-    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "voice-tutor"))
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                    "voice-tutor"))
     import ui
 
     ui.submit(lambda root: _run_overlay(root, x, y, text, secs))

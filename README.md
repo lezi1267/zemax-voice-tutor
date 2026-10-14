@@ -44,7 +44,7 @@ copy .env.example .env      :: 填 GLM_API_KEY(open.bigmodel.cn 注册,免费档
 | **跑任意一个分析** | "跑一下波前""看渐晕""公差直方图怎么样" |
 | **拖文件让它学** | 把课件/手册 PDF/教材/截图拖进对话小窗,或拖进 `voice-tutor\data\knowledge\收件箱\`;之后问"那份资料里怎么说" |
 | 打字提问 / 打断 | 对话小窗底部输入框;按 Esc 打断她念话 |
-| 要一份学习总结 | "给我一份学习报告" → 生成 `学习报告.md` |
+| 要一份学习总结 | "给我一份学习报告" → 生成 `课程\学习报告.md` |
 | 验收 + 记进度 + 断点续教 | 数字对上才记;重启后接着上次那步教 |
 
 链路:麦克风 → FunASR SenseVoice(本地识别) → 智谱 GLM(LLM) → TTS(piper / edge / minimax) → 扬声器。
@@ -57,13 +57,14 @@ copy .env.example .env      :: 填 GLM_API_KEY(open.bigmodel.cn 注册,免费档
 |---|---|
 | [voice-tutor/](voice-tutor/) | 主程序:语音管线 + 22 个 Zemax/课程/资料工具 |
 | [voice-tutor/vision.py](voice-tutor/vision.py) | 视觉:截屏或图片 → 智谱免费视觉模型,回文字给主模型 |
-| [voice-tutor/knowledge.py](voice-tutor/knowledge.py) | 拖文件学习:抽文本 → 切块 → 词+向量两路检索(资料存 `voice-tutor\data\knowledge\`) |
-| [学习路线.md](学习路线.md) | 10 课总纲 |
-| 第1课…第10课_*.md | 课件(bot 直接读这些文件带课) |
-| [zemax_api.py](zemax_api.py) | ZOS-API 连接入口(extension / standalone) |
-| [guide.py](guide.py) | 屏幕小幽灵指引(画光圈 + 气泡) |
-| [dialog_fix.py](dialog_fix.py) | 驯服交互扩展小窗:解锁被它锁住的所有窗口 |
-| [shot.py](shot.py) | DPI 感知全屏截屏 |
+| [voice-tutor/knowledge.py](voice-tutor/knowledge.py) | 拖文件学习:抽文本 → 切块 → 词+向量两路检索 |
+| [voice-tutor/data/](voice-tutor/data/) | 生成物都在这儿:`samples\`(试听)、`backups\`(改镜头前的备份)、`knowledge\`(学过的资料 + 收件箱) |
+| [课程/](课程/) | [学习路线.md](课程/学习路线.md)(10 课总纲)+ 第1课…第10课_*.md(bot 直接读这些文件带课) |
+| [zemax/zemax_api.py](zemax/zemax_api.py) | ZOS-API 连接入口(extension / standalone) |
+| [zemax/guide.py](zemax/guide.py) | 屏幕小幽灵指引(画光圈 + 气泡) |
+| [zemax/dialog_fix.py](zemax/dialog_fix.py) | 驯服交互扩展小窗:解锁被它锁住的所有窗口 |
+| [zemax/shot.py](zemax/shot.py) | DPI 感知全屏截屏 |
+| [archive/](archive/) | 用完的一次性脚本(留着查,不参与运行) |
 | [selftest.py](voice-tutor/selftest.py) | 全系统自检(Zemax 没开的项自动 SKIP) |
 
 ## 跑自检

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 
-BASE = Path(__file__).resolve().parent.parent  # 学习游戏根目录(课件在这)
+BASE = Path(__file__).resolve().parent.parent / "课程"  # 课件目录(学习路线.md + 第N课*.md)
 PROGRESS = Path(__file__).resolve().parent / "progress.json"  # 学习档案在 bot 目录
 
 
