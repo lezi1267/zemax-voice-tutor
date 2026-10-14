@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 """学生拖一个文件进来 → 抽文本 → 切块存起来 → 教课时检索引用。
 
-存:voice-tutor\\knowledge\\<名字>.json(块 + 关键词 + 向量)。向量归一化后量化成 int8 + base64:
+存:voice-tutor\\data\\knowledge\\<名字>.json(块 + 关键词 + 向量)。向量归一化后量化成 int8 + base64:
 一个块 1.4KB 而不是 8KB(实测向量占文件 82% → 40%),读回来用 numpy 一次矩阵算完,
 不给每个分量建 Python 对象(50 块的文档:检索内存峰值 5.4MB → 0.2MB)。
 检索:词重叠 × 逆文档频率(jieba 是 funasr 带的)+ 智谱 embedding-2 余弦相似度,两路合分。
 向量拿不到(断网/额度)就自动退回纯词袋,提问不会炸。
-收件箱:voice-tutor\\knowledge\\收件箱\\ —— 把文件拖进去,下次提问自动学会。
+收件箱:voice-tutor\\data\\knowledge\\收件箱\\ —— 把文件拖进去,下次提问自动学会。
 
 ponytail: 每次提问把所有块算一遍余弦(矩阵乘,几千块毫秒级),块数上万再考虑 ANN 索引。
 """
@@ -24,7 +24,8 @@ load_dotenv(Path(__file__).resolve().parent / ".env", override=True)
 
 EMBED_MODEL = os.getenv("GLM_EMBED_MODEL", "embedding-2")
 _EMBED_URL = "https://open.bigmodel.cn/api/paas/v4/embeddings"
-DIR = Path(__file__).resolve().parent / "knowledge"
+DATA = Path(__file__).resolve().parent / "data"  # 生成物统一放 data\(代码目录只留代码)
+DIR = DATA / "knowledge"
 INBOX = DIR / "收件箱"
 CHUNK = 700  # 一块约 700 字:够一段讲解,又不会把无关内容一起塞给模型
 TEXT_EXT = {".txt", ".md", ".csv", ".json", ".py", ".log", ".yaml", ".yml"}
@@ -169,7 +170,7 @@ def _docs() -> list:
 
 
 def learn(path) -> dict:
-    """学一份文件:抽文本 → 切块 → 存 knowledge\\。同一个文件没改过就不重学。"""
+    """学一份文件:抽文本 → 切块 → 存 data\\knowledge\\。同一个文件没改过就不重学。"""
     p = Path(str(path).strip().strip('"')).expanduser()
     if not p.is_file():
         return {"error": f"文件不存在:{p}"}
@@ -235,7 +236,7 @@ def query(question: str, k: int = 3) -> dict:
     """两路合分:词重叠×逆文档频率 + 向量余弦(各归一化到 0~1,各占一半)。向量拿不到就纯词袋。"""
     docs = _docs()
     if not docs:
-        return {"error": "还没学过任何资料:让学生把文件拖进 voice-tutor\\knowledge\\收件箱\\,或给我路径"}
+        return {"error": "还没学过任何资料:让学生把文件拖进 voice-tutor\\data\\knowledge\\收件箱\\,或给我路径"}
     q = set(_terms(question))
     qv = _embed([question])
     qv = qv[0] if qv and len(qv) == 1 else None

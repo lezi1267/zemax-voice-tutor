@@ -3,8 +3,7 @@ __pycache__/
 *.wav
 *.mp3
 progress.json
-knowledge/
-backups/
+data/
 g2pW/
 *.zmx
 *.zda

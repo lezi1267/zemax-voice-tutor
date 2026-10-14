@@ -80,16 +80,16 @@ cd voice-tutor
 | TTS 文本聚合 | `TTS_AGGREGATION=token`(边生成边合成,**实测首音 1.36s**) | 改成 `sentence` = pipecat 原生行为,攒够一整句才开口,语调更连贯但**首音 2.89s** |
 | TTS 引擎 | `TTS_ENGINE=minimax`(同一句话 3 次首音 0.33s 中位数,音色 `MINIMAX_VOICE`) | 免费本地 `piper` 实测首音 **0.47s**,比 minimax 还慢一点(别再以为本地一定快);`edge` 服务实测 403 挂了;minimax 新式 sk-api key 不用 GroupId,端点 `MINIMAX_BASE_URL=https://api.minimax.cn/v1/t2a_v2` |
 | STT 精度 | FunASR SenseVoice(本地直测:4.01s 语音 → 0.50s 出文本,实时率 0.125) | whisper 在本机 CPU 实时率 1.29 不可用;要更快/更准再议 |
-| TTS 音色 | `.env` 里 `PIPER_VOICE = "zh_CN-xiao_ya-medium"`(只对 piper) | 换回 `zh_CN-huayan-medium` 即温柔女声;试听在 `samples\`;minimax 用 `MINIMAX_VOICE` |
+| TTS 音色 | `.env` 里 `PIPER_VOICE = "zh_CN-xiao_ya-medium"`(只对 piper) | 换回 `zh_CN-huayan-medium` 即温柔女声;试听在 `data\samples\`;minimax 用 `MINIMAX_VOICE` |
 | 语速 | `VOICE_SPEED=0.85`(只对 piper,越大越慢) | minimax 用 `MINIMAX_SPEED` |
 | 人设 | `SYSTEM` | 按课改 |
 
-试听音频不在仓库里(各家 TTS 的输出,有版权):`.venv\Scripts\python make_samples.py` 生成 edge 版到 `samples\`。
+试听音频不在仓库里(各家 TTS 的输出,有版权):`.venv\Scripts\python make_samples.py` 生成 edge 版到 `data\samples\`。
 
 中文可选音色(Piper 就这么多,都是本地免费):
 - `zh_CN-xiao_ya-medium` — 年轻女声,更活泼;首次用会自动下 g2pW 拼音模型(152 MB,已改走 hf-mirror),需要 `[zh]` extra 里的 `g2pw` 查表
 - `zh_CN-huayan-medium` — 温柔女声
-- 想要真正标准/甜的普通话:`TTS_ENGINE=edge`(微软免费,晓晓,试听 samples\edge_xiaoxiao.wav)/ `minimax`(云端付费,音色用 `MINIMAX_VOICE` 挑)
+- 想要真正标准/甜的普通话:`TTS_ENGINE=edge`(微软免费,晓晓,试听 data\samples\edge_xiaoxiao.wav)/ `minimax`(云端付费,音色用 `MINIMAX_VOICE` 挑)
 
 ## 下一步(接 Zemax)
 
@@ -122,8 +122,8 @@ cd voice-tutor
   (波前、包围能量、焦点位移、渐晕、相对照度、公差直方图、泽尼克……),按中文名跑一份,
   原始文本数据直接给模型。专用工具(read_analysis 等)有覆盖的优先用
 - **已完成:拖文件让它学(learn_file / list_knowledge / ask_knowledge)** —— 把课件、手册章节、
-  教材 PDF、截图拖进对话小窗(或拖进 `knowledge\收件箱\`,或在输入框里打文件路径),
-  抽文本 → 切块 → 存 `voice-tutor\knowledge\`。检索两路合分:jieba 词重叠×IDF + 智谱 `embedding-2` 余弦
+  教材 PDF、截图拖进对话小窗(或拖进 `data\knowledge\收件箱\`,或在输入框里打文件路径),
+  抽文本 → 切块 → 存 `voice-tutor\data\knowledge\`。检索两路合分:jieba 词重叠×IDF + 智谱 `embedding-2` 余弦
   (向量归一化后量化成 int8 + base64:一个块 1.4KB 而不是 8KB,实测向量占文件 82%→41%、
   检索内存峰值 5.4MB→0.7MB,量化最大余弦偏差 0.005、真实语料 top-3 排名 5/5 一致;
   向量拿不到自动退回纯词袋)。引原文会说出自哪份资料,

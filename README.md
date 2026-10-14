@@ -24,7 +24,7 @@ copy .env.example .env      :: 填 GLM_API_KEY(open.bigmodel.cn 注册,免费档
 装不上、首次下载要多久、Zemax 前置条件:[INSTALL.md](INSTALL.md)。
 完整说明、音色选择、常见坑:[voice-tutor/README.md](voice-tutor/README.md)。
 想桌面双击启动:`pwsh voice-tutor/install_shortcut.ps1` 建桌面快捷方式(控制台自动最小化)。
-想挑音色:`voice-tutor\.venv\Scripts\python voice-tutor\make_samples.py` 生成试听音频到 `voice-tutor\samples\`。
+想挑音色:`voice-tutor\.venv\Scripts\python voice-tutor\make_samples.py` 生成试听音频到 `voice-tutor\data\samples\`。
 
 ## 它能做什么
 
@@ -36,13 +36,13 @@ copy .env.example .env      :: 填 GLM_API_KEY(open.bigmodel.cn 注册,免费档
 | 读像差系数 / 场曲畸变 | "球差多大""什么像差最狠""场曲多少" |
 | 读评价函数 | "MF 多少""我有几个变量" |
 | **替你动手改镜头** | "帮我把 R2 改成 63.7""加个波长 0.4861""把半径设成变量" |
-| **撤销** | "改坏了""恢复原样"(每次动手前自动备份到 `voice-tutor\backups\`) |
+| **撤销** | "改坏了""恢复原样"(每次动手前自动备份到 `voice-tutor\data\backups\`) |
 | **替你跑优化 / 扫参数** | "你帮我优化""扫一遍半径找最好的" |
 | 屏幕上指给你点哪里 | 带课时自动触发(小幽灵滑过去) |
 | OCR 读 API 读不到的内容 | "屏幕上/图上写的什么" |
 | **看分析图的形状和趋势** | "这个点列图是什么形状""MTF 曲线怎么往下掉""这个弹窗写的什么" |
 | **跑任意一个分析** | "跑一下波前""看渐晕""公差直方图怎么样" |
-| **拖文件让它学** | 把课件/手册 PDF/教材/截图拖进对话小窗,或拖进 `voice-tutor\knowledge\收件箱\`;之后问"那份资料里怎么说" |
+| **拖文件让它学** | 把课件/手册 PDF/教材/截图拖进对话小窗,或拖进 `voice-tutor\data\knowledge\收件箱\`;之后问"那份资料里怎么说" |
 | 打字提问 / 打断 | 对话小窗底部输入框;按 Esc 打断她念话 |
 | 要一份学习总结 | "给我一份学习报告" → 生成 `学习报告.md` |
 | 验收 + 记进度 + 断点续教 | 数字对上才记;重启后接着上次那步教 |
@@ -57,7 +57,7 @@ copy .env.example .env      :: 填 GLM_API_KEY(open.bigmodel.cn 注册,免费档
 |---|---|
 | [voice-tutor/](voice-tutor/) | 主程序:语音管线 + 22 个 Zemax/课程/资料工具 |
 | [voice-tutor/vision.py](voice-tutor/vision.py) | 视觉:截屏或图片 → 智谱免费视觉模型,回文字给主模型 |
-| [voice-tutor/knowledge.py](voice-tutor/knowledge.py) | 拖文件学习:抽文本 → 切块 → 词+向量两路检索(资料存 `voice-tutor\knowledge\`) |
+| [voice-tutor/knowledge.py](voice-tutor/knowledge.py) | 拖文件学习:抽文本 → 切块 → 词+向量两路检索(资料存 `voice-tutor\data\knowledge\`) |
 | [学习路线.md](学习路线.md) | 10 课总纲 |
 | 第1课…第10课_*.md | 课件(bot 直接读这些文件带课) |
 | [zemax_api.py](zemax_api.py) | ZOS-API 连接入口(extension / standalone) |
@@ -90,7 +90,7 @@ STT/TTS 都在本地或你自己的云端账号上跑;LLM 和 minimax TTS 需要
 - 拖进来的资料是 词重叠 + 语义向量 两路合分(向量拿不到退回纯词袋):词和语义都没命中时她会如实说"没讲到",不硬引。
   扫描件 PDF 抽不出文字 —— 把关键页截图拖进来,她改用眼睛看。
 - 交互扩展一次只认一个连接:bot 启动就连上并长驻(退出时才断开),所以同一时刻别再开第二个 API 客户端。
-- 她会动手改你的镜头(改半径/设变量/跑优化),但**每次动手前都自动存一份** 到 `voice-tutor\backups\`,
+- 她会动手改你的镜头(改半径/设变量/跑优化),但**每次动手前都自动存一份** 到 `voice-tutor\data\backups\`,
   说"恢复原样"就拉回来。课件要求你自己练的步骤她不会代做。
 - 优化只朝评价函数最小跑:没有 EFFL 之类的约束时焦距会漂,她会主动提醒(实测 97mm → 74mm 那次就是)。
 

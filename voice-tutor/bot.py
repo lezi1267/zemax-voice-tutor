@@ -170,7 +170,7 @@ def _plain(text: str) -> str:
         text = pat.sub(rep, text)
     return text
 
-# 音色:Piper 中文就两个女声,samples\ 里各有一条试听,选好改 .env 里的 PIPER_VOICE
+# 音色:Piper 中文就两个女声,data\samples\ 里各有一条试听,选好改 .env 里的 PIPER_VOICE
 VOICE = os.getenv("PIPER_VOICE", "zh_CN-xiao_ya-medium")
 
 # 语速:.env 里 VOICE_SPEED 调,length_scale 越大越慢(0.85 快 / 1.0 正常 / 1.2 慢)

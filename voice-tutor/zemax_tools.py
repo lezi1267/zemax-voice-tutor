@@ -959,7 +959,7 @@ read_aberration_schema = FunctionSchema(
 
 # ---------- 助教动手:改镜头 / 备份回滚 / 跑优化 / 扫参数(改之前一律先备份) ----------
 
-BACKUP_DIR = Path(__file__).resolve().parent / "backups"
+BACKUP_DIR = Path(__file__).resolve().parent / "data" / "backups"
 
 _SURFACE_ATTR = {"半径": "Radius", "厚度": "Thickness", "材料": "Material",
                  "半口径": "SemiDiameter", "注释": "Comment"}
@@ -979,8 +979,8 @@ def _drop_cache(*names):
 
 
 def _backup_lens(oss) -> str:
-    """动手改之前先存一份到 voice-tutor\\backups\\:改坏了 restore_lens 拉得回来。"""
-    BACKUP_DIR.mkdir(exist_ok=True)
+    """动手改之前先存一份到 voice-tutor\\data\\backups\\:改坏了 restore_lens 拉得回来。"""
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     # 名字带到毫秒:同一秒里连改两次(优化+扫描)不会互相覆盖
     p = BACKUP_DIR / ("lens_" + time.strftime("%Y%m%d_%H%M%S") + f"_{int(time.time() * 1000 % 1000):03d}.zmx")
     oss.save_as(str(p))
@@ -1048,7 +1048,7 @@ edit_zemax_schema = FunctionSchema(
     description=(
         "替学生直接改 Zemax:插入/删除面、某面的半径/厚度/材料/半口径/注释、把半径或厚度设为变量/取消变量、"
         "系统孔径值、加波长、加视场。学生说'你帮我改''直接改成XX''插入一个面''帮我加个波长 0.4861''加 7 度视场'时调用。"
-        "改之前自动备份到 backups\\,返回的'改完之后'是实际读回的值 —— 必须照这个报给学生,别只说'改好了'。"
+        "改之前自动备份到 data\\backups\\,返回的'改完之后'是实际读回的值 —— 必须照这个报给学生,别只说'改好了'。"
         "课件里要求学生自己练的步骤不要代做,除非学生明确让你改。"
     ),
     properties={
@@ -1084,7 +1084,7 @@ def _restore_lens_sync(args=None):
         oss = _connect_sync()
         files = sorted(BACKUP_DIR.glob("lens_*.zmx")) if BACKUP_DIR.exists() else []
         if not files:
-            return {"error": "没有备份可回滚:backups\\ 是空的"}
+            return {"error": "没有备份可回滚:data\\backups\\ 是空的"}
         name = str(args.get("备份", "")).strip()
         p = files[-1] if not name else BACKUP_DIR / name
         if not p.exists():
