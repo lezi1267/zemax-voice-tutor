@@ -4,6 +4,11 @@
 你对它开口,它听懂、回答、念出来,可以打断;带课时它实时读你的镜头数据、跑分析拿真实数值、
 在屏幕上指给你点哪里。
 
+![demo:对话窗里是真实回答,箭头指向 Zemax 的"分析"菜单](demo.gif)
+
+下面这段 13 秒是**真录的**:聊天窗里的回答是 GLM 当时生成的,箭头指向的是真实 OpticStudio 窗口的"分析"菜单
+(录的时候没出声,所以看不到语音那条 —— 听的部分见下面"链路")。
+
 An English-speaking Zemax OpticStudio voice tutor with a 10-lesson curriculum. It listens, answers,
 reads your live lens data through ZOS-API, runs analyses for real numbers, and points at the UI for you.
 
