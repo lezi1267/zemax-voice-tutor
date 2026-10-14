@@ -19,6 +19,20 @@
 
 打断(barge-in)、断句 —— Pipecat 内置,不用手搓。但**本地外放没有回声消除**:建议戴耳机,否则它说出来的话会被麦克风收回去,像"自己打断自己"(开场白做了闭麦保护,后面几轮仍会这样)。
 
+## 延迟预算(2026-10 实测,别再凭感觉猜)
+
+从"学生说完"到"听到第一个字"的各段实测值:
+
+| 段 | 实测 | 备注 |
+|---|---|---|
+| VAD 判定说完 | 0.2s | pipecat `VADParams.stop_secs` 默认就是 0.2(不是 0.8,别再往这儿优化) |
+| 语音识别 | 0.50s | 本地直测:4.01s 语音 → 0.50s 出文本(实时率 0.125) |
+| LLM 首字 | 0.81s / 1.42s | 不带工具 / 带 22 个工具 schema(3475 tokens,描述占 2535) |
+| TTS 首音 | 0.33s | minimax 3 次中位数(piper 0.47s) |
+| 文本聚合 | 0.00s | 已改 `TTS_AGGREGATION=token`;原来 sentence 模式要攒够一整句,实测首音 2.89s |
+
+合计约 **1.9s**(纯聊天);要调工具的回答每多一次工具往返 +1.4s 左右(第二次 LLM 调用)+ 工具本身的耗时(Zemax 读数 1s 上下,优化/扫描十几秒)。
+
 ## 跑之前
 
 1. 复制 `.env.example` 为 `.env`,填 `GLM_API_KEY`([open.bigmodel.cn](https://open.bigmodel.cn) 注册后在"API Keys"里创建,`glm-4-flash` 免费档不用充值)
@@ -64,8 +78,8 @@ cd voice-tutor
 |---|---|---|
 | LLM 模型 | `GLM_MODEL=glm-4.5-air`(实测 1.3 秒,已关思考) | 免费 `glm-4-flash` 知识浅;更强如 `glm-4.7` 思考慢,语音慎用 |
 | TTS 文本聚合 | `TTS_AGGREGATION=token`(边生成边合成,**实测首音 1.36s**) | 改成 `sentence` = pipecat 原生行为,攒够一整句才开口,语调更连贯但**首音 2.89s** |
-| TTS 引擎 | `TTS_ENGINE=minimax`(实测首包 0.7s,音色 `MINIMAX_VOICE`) | 免费本地用 `piper`;微软免费播音级用 `edge`(首包 2~3s);minimax 新式 sk-api key 不用 GroupId,端点 `MINIMAX_BASE_URL=https://api.minimax.cn/v1/t2a_v2` |
-| STT 精度 | FunASR SenseVoice(实时率 0.08,中文识别全对) | whisper 在本机 CPU 实时率 1.29 不可用;要更快/更准再议 |
+| TTS 引擎 | `TTS_ENGINE=minimax`(同一句话 3 次首音 0.33s 中位数,音色 `MINIMAX_VOICE`) | 免费本地 `piper` 实测首音 **0.47s**,比 minimax 还慢一点(别再以为本地一定快);`edge` 服务实测 403 挂了;minimax 新式 sk-api key 不用 GroupId,端点 `MINIMAX_BASE_URL=https://api.minimax.cn/v1/t2a_v2` |
+| STT 精度 | FunASR SenseVoice(本地直测:4.01s 语音 → 0.50s 出文本,实时率 0.125) | whisper 在本机 CPU 实时率 1.29 不可用;要更快/更准再议 |
 | TTS 音色 | `.env` 里 `PIPER_VOICE = "zh_CN-xiao_ya-medium"`(只对 piper) | 换回 `zh_CN-huayan-medium` 即温柔女声;试听在 `samples\`;minimax 用 `MINIMAX_VOICE` |
 | 语速 | `VOICE_SPEED=0.85`(只对 piper,越大越慢) | minimax 用 `MINIMAX_SPEED` |
 | 人设 | `SYSTEM` | 按课改 |

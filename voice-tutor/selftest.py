@@ -345,7 +345,13 @@ async def main():
         except Exception as e:
             report("point_at(Zemax 没开时不崩)", False, type(e).__name__ + ": " + str(e)[:70])
 
-    # 4) Edge TTS 全链路
+    # 4) Edge TTS 全链路。注意:这是微软的非官方接口,服务端 403/握手失败 = 服务挂了,不是代码坏了
+    # (2026-10 实测就是 403),这种情况记 SKIP;只有"服务通但音频不对"才记 FAIL。
+    def _edge_down(e) -> bool:
+        s = f"{type(e).__name__} {e}"
+        return any(k in s for k in ("403", "WSServerHandshake", "Invalid data found",
+                                    "Handshake status", "ConnectionClosed"))
+
     try:
         t0 = time.time()
         chunks = 0
@@ -362,7 +368,8 @@ async def main():
         report("Edge TTS(实测)", chunks > 0 and dur > 3,
                f"首块{first:.1f}s 全句{time.time()-t0:.1f}s 音频{dur:.1f}s" if first else "无输出")
     except Exception as e:
-        report("Edge TTS(实测)", False, str(e)[:60])
+        report("Edge TTS(实测)", None if _edge_down(e) else False,
+               "微软接口挂了(非本机问题),改用 piper/minimax:" + str(e)[:50])
 
     # 4b) VOICE_SPEED 换算:0.7 必须明显比 1.2 短(以前 edge 不换算,语速设了没效果)
     try:
@@ -375,7 +382,8 @@ async def main():
         fast, slow = await dur_at(0.7), await dur_at(1.2)
         report("Edge 语速(VOICE_SPEED 真生效)", fast * 1.3 < slow, f"0.7→{fast:.1f}s 1.2→{slow:.1f}s")
     except Exception as e:
-        report("Edge 语速(VOICE_SPEED 真生效)", False, str(e)[:60])
+        report("Edge 语速(VOICE_SPEED 真生效)", None if _edge_down(e) else False,
+               "微软接口挂了(非本机问题),没法验语速:" + str(e)[:50])
 
     # 5) 对话窗口
     try:
