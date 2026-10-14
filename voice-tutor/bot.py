@@ -187,14 +187,14 @@ if _speed != 1.0:
 
 
 def _tts_agg():
-    """TTS 文本聚合模式。pipecat 默认 SENTENCE:攒够一整个句子才开始合成 ——
-    实测同一句话、同一引擎,首音 2.89s;改成 TOKEN(边到边合成)首音 1.36s。
-    嫌语调碎就在 .env 里设 TTS_AGGREGATION=sentence 换回去。"""
+    """TTS 文本聚合模式,默认 SENTENCE(攒整句,语调连贯,首音 2.89s)。
+    .env 里设 TTS_AGGREGATION=token 换反应快(首音 1.36s)——
+    但云端引擎每个 token 一次请求,听感会一顿一顿(实测 minimax)。"""
     from pipecat.services.tts_service import TextAggregationMode
 
-    if os.getenv("TTS_AGGREGATION", "token").strip().lower() == "sentence":
-        return TextAggregationMode.SENTENCE
-    return TextAggregationMode.TOKEN
+    if os.getenv("TTS_AGGREGATION", "sentence").strip().lower() == "token":
+        return TextAggregationMode.TOKEN
+    return TextAggregationMode.SENTENCE
 
 
 def _pick_output_index() -> int | None:
