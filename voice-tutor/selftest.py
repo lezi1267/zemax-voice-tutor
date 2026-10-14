@@ -197,6 +197,36 @@ async def main():
            seen == ["波前", "渐晕"] and st["r"].get("分析") == "波前" and "缓存" in st["r"] and not left,
            f"实跑{seen},drop 后残留 {len(left)} 条")
 
+    # 2c) 备份轮转:一轮课改几十次不该攒一堆 —— 只留最近 N 份(沙盒目录,不碰真备份)
+    tmp_b = Path(tempfile.mkdtemp())
+    saved_b = zemax_tools.BACKUP_DIR
+    saved_keep = os.environ.get("BACKUP_KEEP")
+    try:
+        zemax_tools.BACKUP_DIR = tmp_b
+        os.environ["BACKUP_KEEP"] = "3"
+
+        class FakeOss:
+            def save_as(self, p):
+                Path(p).write_bytes(b"zmx")
+
+        names = []
+        for i in range(5):
+            names.append(zemax_tools._backup_lens(FakeOss()))
+            time.sleep(0.002)  # 名字带毫秒,别让两份撞名
+        kept = sorted(p.name for p in tmp_b.glob("lens_*.zmx"))
+        report("备份轮转(只留最近 N 份)",
+               len(kept) == 3 and names[-1] in kept and names[0] not in kept,
+               f"存了 5 份,留下 {len(kept)} 份(最新那份在)")
+    except Exception as e:
+        report("备份轮转(只留最近 N 份)", False, str(e)[:80])
+    finally:
+        zemax_tools.BACKUP_DIR = saved_b
+        if saved_keep is None:
+            os.environ.pop("BACKUP_KEEP", None)
+        else:
+            os.environ["BACKUP_KEEP"] = saved_keep
+        shutil.rmtree(tmp_b, ignore_errors=True)
+
     for n, expect in [(1, "第 1 课"), (2, "第 2 课"), (9, "第 9 课"), (10, "毕业项目")]:
         p, st = mk_params({"lesson": n})
         await lessons._read_lesson_handler(p)

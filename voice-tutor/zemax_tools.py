@@ -984,6 +984,13 @@ def _backup_lens(oss) -> str:
     # 名字带到毫秒:同一秒里连改两次(优化+扫描)不会互相覆盖
     p = BACKUP_DIR / ("lens_" + time.strftime("%Y%m%d_%H%M%S") + f"_{int(time.time() * 1000 % 1000):03d}.zmx")
     oss.save_as(str(p))
+    keep = int(os.getenv("BACKUP_KEEP", "20"))
+    old = sorted(BACKUP_DIR.glob("lens_*.zmx"))[:-keep]  # 只留最近 20 份:一轮课改几十次不该攒成一堆
+    for f in old:
+        try:
+            f.unlink()
+        except OSError:
+            pass
     return p.name
 
 
@@ -1101,8 +1108,10 @@ _restore_lens_handler = _make_handler("restore_lens", "正在把镜头拉回备�
 restore_lens_schema = FunctionSchema(
     name="restore_lens",
     description=(
-        "把学生的镜头恢复成上一次备份(每次 edit_zemax/run_optimize 前都自动存过)。"
-        "学生说'改坏了''撤销''恢复原样'时调用;备份 是可选文件名,不填就用最近的一份。"
+        "把学生的镜头恢复成某一份备份(每次 edit_zemax/run_optimize 前都自动存过)。"
+        "学生说'改坏了''撤销''恢复原样'时调用;备份 是可选文件名,不填就用最近的一份(只退一步)。"
+        "注意:一次只退一步 —— 学生说'还是不对''再往前退''退到最初'时,把返回的'还有这些备份'里更早的"
+        "那份文件名填进 备份 再调一次。"
     ),
     properties={"备份": {"type": "string", "description": "备份文件名,如 lens_20261010_2015.zmx;留空=最近一次"}},
     required=[],
