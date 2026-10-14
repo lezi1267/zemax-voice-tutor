@@ -18,8 +18,8 @@ copy .env.example .env      :: 填 GLM_API_KEY(open.bigmodel.cn 注册,免费档
 ```
 
 听到它开口说话 = 全链路通。之后你对它说"开始第 1 课"。
-要读数/指路功能:先开 Zemax,点 **编程 → 交互扩展**(bot 会自动连上并驯服那个锁人的小窗)。
-没开 Zemax 也能纯聊天。
+默认 `ZEMAX_ENABLED=0`,不碰 Zemax —— 语音聊天、10 课课件、拖文件学习、看屏幕都能用。
+要读数/改镜头/指路(得你自己有合法 OpticStudio 授权):先开 Zemax,点 **编程 → 交互扩展**,再把 `.env` 里 `ZEMAX_ENABLED` 改成 `1`。
 
 装不上、首次下载要多久、Zemax 前置条件:[INSTALL.md](INSTALL.md)。
 完整说明、音色选择、常见坑:[voice-tutor/README.md](voice-tutor/README.md)。

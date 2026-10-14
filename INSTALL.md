@@ -54,12 +54,16 @@ copy .env.example .env
 
 听到它开口说一句 = 全链路通。
 
-## 5. 要它读你的 Zemax
+## 5. 要它读你的 Zemax(选装)
+
+这一节可以整段跳过 —— 默认 `ZEMAX_ENABLED=0`,不碰 Zemax,语音聊天 + 看屏幕照常用。
+
+要用读数 / 改镜头 / 指路,再配置:
 
 - 你自己得有合法的 **Zemax OpticStudio** 授权(本项目与 Ansys 无关,不提供任何授权)
 - 打开 OpticStudio,点 **编程 → 交互扩展**,弹出的小窗留着别关
+- `.env` 里把 `ZEMAX_ENABLED` 改成 `1`,重启
 - 实测版本 2023 R1
-- 没有 Zemax 也能用:`.env` 里 `ZEMAX_ENABLED=0`,只剩语音聊天 + 看屏幕,其余功能照常
 
 ## 6. 验一遍
 

@@ -396,8 +396,8 @@ class Greeting(FrameProcessor):
 
 
 async def run_bot(transport) -> None:
-    # 启动即连 Zemax 并长驻(后台跑,不挡开场白);ZEMAX_ENABLED=0 时完全跳过
-    if os.getenv("ZEMAX_ENABLED", "1") == "1":
+    # Zemax 是选装:ZEMAX_ENABLED=1 才连(启动即连长驻,后台跑,不挡开场白)
+    if os.getenv("ZEMAX_ENABLED", "0") == "1":
         if _zemax_running():
             asyncio.create_task(zemax_tools.warm_connect())
         else:
